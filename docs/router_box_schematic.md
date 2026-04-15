@@ -1,321 +1,171 @@
-# Router Box Wiring Schematic
+# Router Box Simple Build Schematic
 
-This is the practical wiring layout for building the router box with dev boards, Wago connectors, and loose wiring.
+This version is meant for hand assembly with:
 
-## Visual top-down picture
+- `XIAO ESP32C3` dev board
+- `INA219` module
+- `5V relay module`
+- `2x DS18B20`
+- `Wago connectors`
+- `12/24V -> 5V regulator Tobsun Converter`
 
-Open this drawing for the clearest view:
+It is not a PCB schematic. It is a practical "what wire goes where" guide.
 
-![Router Box Top-Down Wiring](C:/Users/jason/Projects/iot/iot-solar-airmesh/docs/router_box_topdown.svg)
+Naming used here:
 
-Capacitor placement rule:
+- `Battery/DC input` = the higher-voltage supply coming into the box before the Tobsun converter
+- `5V` = the regulated output coming out of the Tobsun converter
 
-- The `470uF` capacitor is not inline with the 5V feed.
-- The `0.1uF` capacitor is not inline with the 5V feed.
-- Both capacitors bridge across `5V` and `GND` in parallel, close to the XIAO power entry and 5V Wago distribution point.
+## Use This Drawing First
 
-### Capacitor hookup only
+Open the simple wiring picture:
 
-```text
-CORRECT:
+![Router Box Simple Wiring](C:/Users/jason/Projects/iot/iot-solar-airmesh/docs/router_box_simple_layout.svg)
 
-5V rail  --------------------+--------------------> to XIAO 5V/VIN
-                             |
-                             +---- (+) 470uF (-) ----+
-                             |                       |
-                             +---- 0.1uF ceramic ----+
-                                                     |
-GND rail --------------------+-----------------------> to XIAO GND
+If you want to build in order, use the step-by-step guide:
 
+- [Router box step-by-step assembly](C:/Users/jason/Projects/iot/iot-solar-airmesh/docs/router_box_step_by_step.md)
 
-WRONG:
+## The Four Wago Groups
 
-5V rail ---- capacitor ----> XIAO
-```
+Build the wiring around four connector groups.
 
-Plain English:
+### Wago A: battery/DC input
 
-- One leg of the `470uF` goes to `5V`, and the other leg goes to `GND`.
-- One leg of the `0.1uF` goes to `5V`, and the other leg goes to `GND`.
-- They both connect to the same two nodes: `5V` and `GND`.
-- The `470uF` electrolytic is polarized:
-  - capacitor `+` lead -> `5V`
-  - capacitor `-` lead -> `GND`
-- The `0.1uF` ceramic capacitor is typically non-polarized, so either direction is fine.
+- `BATTERY/DC IN +`
+- `BATTERY/DC IN -`
 
-## 1. Main DC power path
+### Wago B: 5V distribution
 
-```text
-BATTERY / DC SOURCE
-  + -------------------------------------> INA219 VIN+
-                                             INA219 VIN- -----> Relay COM
-                                                                Relay NO -----> Router +
+- `5V`
+- `GND`
 
-  - -------------------------------------------------------------------------> Router -
-  |
-  +-----> Regulator IN-
-
-BATTERY / DC SOURCE +
-  |
-  +-----> Regulator IN+
-```
-
-Router power is switched on the positive side:
-
-- Source `+` -> `INA219 VIN+`
-- `INA219 VIN-` -> `Relay COM`
-- `Relay NO` -> `Router +`
-- Source `-` -> `Router -`
-
-That lets the INA219 measure router current while the relay disconnects router power.
-
-## 2. Low-voltage control power
-
-```text
-12V/24V -> 5V REGULATOR
-
-5V OUT  -----> Wago 5V bus -----> XIAO 5V/VIN
-                               -> Relay VCC
-                               -> 470uF capacitor (+)
-                               -> 0.1uF capacitor
-
-GND OUT -----> Wago GND bus ---> XIAO GND
-                               -> Relay GND
-                               -> INA219 GND
-                               -> DS18B20 #1 GND
-                               -> DS18B20 #2 GND
-                               -> 470uF capacitor (-)
-                               -> 0.1uF capacitor
-```
-
-Important:
-
-- Feed the `XIAO ESP32C3` from regulated `5V` into its `5V`/`VIN` input, not from the battery directly.
-- Use the XIAO `3V3` pin only as the sensor logic supply rail.
-- Every module must share the same ground.
-
-## 3. XIAO signal wiring
-
-```text
-XIAO ESP32C3
-
-GPIO2  -----> DS18B20 data bus
-GPIO3  -----> Relay IN
-GPIO6  -----> INA219 SDA
-GPIO7  -----> INA219 SCL
-3V3    -----> INA219 VCC
-3V3    -----> DS18B20 #1 VDD
-3V3    -----> DS18B20 #2 VDD
-GND    -----> Common GND bus
-```
-
-## 4. DS18B20 bus wiring
-
-Both temperature sensors sit on the same 1-wire bus:
-
-```text
-XIAO GPIO2 ----------------+-----> DS18B20 #1 DATA
-                           |
-                           +-----> DS18B20 #2 DATA
-                           |
-                           +-----> 4.7k resistor -----> XIAO 3V3
-
-XIAO 3V3  -----------------+-----> DS18B20 #1 VDD
-                           +-----> DS18B20 #2 VDD
-
-XIAO GND  -----------------+-----> DS18B20 #1 GND
-                           +-----> DS18B20 #2 GND
-```
-
-Use a 3-position Wago or terminal group for:
+### Wago C: sensor / logic distribution
 
 - `3V3`
 - `DATA`
 - `GND`
 
-Then land both sensor cables into that same group.
-
-## 5. INA219 wiring
-
-```text
-INA219 POWER / I2C
-
-INA219 VCC  -----> XIAO 3V3
-INA219 GND  -----> Common GND
-INA219 SDA  -----> XIAO GPIO6
-INA219 SCL  -----> XIAO GPIO7
-
-INA219 CURRENT PATH
-
-Source +       -----> INA219 VIN+
-INA219 VIN-    -----> Relay COM
-```
-
-Use the INA219 as a high-side current sensor. Keep its logic side at `3.3V` so the I2C pull-ups stay safe for the XIAO.
-
-## 6. Relay wiring
-
-```text
-RELAY MODULE (Songle-style module)
-
-Relay VCC -----> Wago 5V bus
-Relay GND -----> Wago GND bus
-Relay IN  -----> XIAO GPIO3
-
-Relay COM -----> INA219 VIN-
-Relay NO  -----> Router +
-Relay NC  -----> Not used
-```
-
-Important relay note:
-
-- Many 5V relay modules work with a 3.3V control signal on `IN`, but not all do.
-- If your relay module does not trigger reliably from the XIAO, add a transistor or MOSFET driver stage, or use a relay board advertised as `3.3V logic compatible`.
-
-## 7. Suggested Wago grouping
-
-If you are building this with loose parts, this grouping is clean and easy to service:
-
-### Wago group A: incoming source
-
-- `SRC+`
-- `SRC-`
-
-### Wago group B: regulator output
-
-- `5V`
-- `GND`
-
-### Wago group C: XIAO/sensor logic
-
-- `3V3`
-- `1WIRE`
-- `GND`
-
-### Wago group D: switched router output
+### Wago D: router output
 
 - `ROUTER+`
 - `ROUTER-`
 
-## 8. One-page connection list
+## Quick Wiring Order
 
-### High current / power path
+Wire it in this order so the build stays simple.
 
-- `Source +` -> `INA219 VIN+`
+### 1. Make the switched router power path
+
+- `BATTERY/DC IN +` -> `INA219 VIN+`
 - `INA219 VIN-` -> `Relay COM`
-- `Relay NO` -> `Router +`
-- `Source -` -> `Router -`
+- `Relay NO` -> `ROUTER+`
+- `BATTERY/DC IN -` -> `ROUTER-`
 
-### Regulator
+This is the only high-current path.
 
-- `Source +` -> `Regulator IN+`
-- `Source -` -> `Regulator IN-`
-- `Regulator 5V OUT` -> `XIAO 5V/VIN`
-- `Regulator 5V OUT` -> `Relay VCC`
-- `Regulator GND` -> common ground
+### 2. Make the 5V power bus
 
-### XIAO to modules
+- `BATTERY/DC IN +` -> `Tobsun IN+`
+- `BATTERY/DC IN -` -> `Tobsun IN-`
+- `Tobsun 5V OUT +` -> `Wago B 5V`
+- `Tobsun 5V OUT -` -> `Wago B GND`
 
-- `GPIO2` -> both `DS18B20 DATA`
+Then connect these to `Wago B`:
+
+- `XIAO 5V/VIN` -> `5V`
+- `XIAO GND` -> `GND`
+- `Relay VCC` -> `5V`
+- `Relay GND` -> `GND`
+- `INA219 GND` -> `GND`
+
+### 3. Add the capacitors across the 5V bus
+
+Both capacitors go across the same two points, not inline.
+
+- `470uF +` -> `Wago B 5V`
+- `470uF -` -> `Wago B GND`
+- `0.1uF` one leg -> `Wago B 5V`
+- `0.1uF` other leg -> `Wago B GND`
+
+### 4. Make the 3V3 / sensor Wago
+
+From the XIAO, create the small logic bus:
+
+- `XIAO 3V3` -> `Wago C 3V3`
+- `XIAO GPIO2` -> `Wago C DATA`
+- `XIAO GND` -> `Wago C GND`
+
+Add the pull-up:
+
+- `4.7k resistor` between `Wago C 3V3` and `Wago C DATA`
+
+### 5. Connect both DS18B20 sensors
+
+For each sensor:
+
+- `VDD` -> `Wago C 3V3`
+- `DATA` -> `Wago C DATA`
+- `GND` -> `Wago C GND`
+
+Both sensors share the same `DATA` row.
+
+### 6. Connect the INA219 logic pins
+
+- `INA219 VCC` -> `XIAO 3V3`
+- `INA219 SDA` -> `XIAO GPIO6`
+- `INA219 SCL` -> `XIAO GPIO7`
+- `INA219 GND` -> `Wago B GND`
+
+### 7. Connect relay control
+
+- `Relay IN` -> `XIAO GPIO3`
+- `Relay VCC` -> `Wago B 5V`
+- `Relay GND` -> `Wago B GND`
+
+## One-Line Rule For Each Part
+
+- `Battery/source`: feeds router power path and regulator input
+- `Tobsun converter`: makes the `5V` bus from the battery/DC input
+- `Wago B`: main low-voltage power distribution
+- `XIAO`: creates `3V3` and all control signals
+- `Wago C`: easy landing point for both temp sensors
+- `INA219`: measures current on the positive router line
+- `Relay`: switches router positive on/off
+
+## XIAO Pin Map
+
+- `GPIO2` -> `DS18B20 DATA bus`
 - `GPIO3` -> `Relay IN`
 - `GPIO6` -> `INA219 SDA`
 - `GPIO7` -> `INA219 SCL`
-- `3V3` -> `INA219 VCC`
-- `3V3` -> both `DS18B20 VDD`
-- `GND` -> `INA219 GND`, relay ground, both sensor grounds
+- `3V3` -> `INA219 VCC` and both `DS18B20 VDD`
 
-### Passive parts
+## Assembly Notes
 
-- `4.7k resistor` between `GPIO2 / 1WIRE bus` and `3V3`
-- `470uF capacitor` across `5V` and `GND`
-- `0.1uF capacitor` across `5V` and `GND`
+- Put the `INA219` and relay close together.
+- Put the `XIAO`, pull-up resistor, and `Wago C` close together.
+- Use thicker wire for `SRC+`, `SRC-`, `ROUTER+`, and `ROUTER-`.
+- Use smaller wire for `GPIO`, `I2C`, and sensor wiring.
+- Label the two DS18B20 probes before final install.
 
-## 9. Full plain-text schematic
+## Common Mistakes To Avoid
 
-```text
-HIGH CURRENT PATH
-=================
+- Do not feed battery/DC input voltage directly into the XIAO.
+- Do not place the capacitors inline with the 5V wire.
+- Do not pull the DS18B20 data line up to `5V`; pull it up to `3V3`.
+- Do not leave module grounds separate; everything must share ground.
 
-   Source/Battery +
-          |
-          +---------------------------> INA219 VIN+
-                                           |
-                                           +------> INA219 VIN-
-                                                      |
-                                                      +------> Relay COM
-                                                                 |
-                                                                 +------> Relay NO
-                                                                            |
-                                                                            +------> Router +
+## Bench Checklist
 
-   Source/Battery ----------------------------------------------------------> Router -
-
-
-REGULATOR / LOW VOLTAGE POWER
-=============================
-
-   Source/Battery + ---------------------> Regulator IN+
-   Source/Battery - ---------------------> Regulator IN-
-
-   Regulator 5V OUT ---------------------> Wago 5V bus
-                                            |-> XIAO 5V/VIN
-                                            |-> Relay VCC
-                                            |-> 470uF capacitor (+)
-                                            +-> 0.1uF capacitor
-
-   Regulator GND ------------------------> Wago GND bus
-                                            |-> XIAO GND
-                                            |-> Relay GND
-                                            |-> INA219 GND
-                                            |-> DS18B20 #1 GND
-                                            |-> DS18B20 #2 GND
-                                            |-> 470uF capacitor (-)
-                                            +-> 0.1uF capacitor
-
-
-XIAO SIGNALS AND SENSOR POWER
-=============================
-
-   XIAO 3V3 -----------------------------> INA219 VCC
-   XIAO GPIO6 ---------------------------> INA219 SDA
-   XIAO GPIO7 ---------------------------> INA219 SCL
-
-   XIAO GPIO3 ---------------------------> Relay IN
-
-   XIAO GPIO2 ---------------------------> DS18B20 bus DATA
-                                            |-> DS18B20 #1 DATA
-                                            +-> DS18B20 #2 DATA
-
-   XIAO 3V3 -----------------------------> 4.7k resistor
-                                            |
-                                            +-> DS18B20 bus DATA pull-up
-
-   XIAO 3V3 -----------------------------> DS18B20 #1 VDD
-                                            +-> DS18B20 #2 VDD
-
-   XIAO GND -----------------------------> DS18B20 #1 GND
-                                            +-> DS18B20 #2 GND
-
-
-RELAY TERMINALS
-===============
-
-   Relay VCC  -> 5V bus
-   Relay GND  -> GND bus
-   Relay IN   -> XIAO GPIO3
-   Relay COM  -> INA219 VIN-
-   Relay NO   -> Router +
-   Relay NC   -> not used
-```
-
-## 10. Build advice for dev-board construction
-
-- Put the `5V` and `GND` distribution on separate Wago groups first, then branch outward.
-- Keep the high-current router path wires thicker than the signal wires.
-- Keep the INA219 and relay physically close to each other because they sit in the switched positive path.
-- Keep the XIAO, DS18B20 pull-up resistor, and INA219 I2C wiring fairly short.
-- Label the two DS18B20 probes before sealing the box so you know which one is Box 1 and Box 2.
-
-## 11. What is not included
-
-This is a wiring schematic, not a manufactured PCB schematic. Since you are assembling with dev boards and connectors, this is the right level to wire it by hand. If you want, the next useful step is a box-layout drawing that shows exactly which Wago block each wire lands in.
+- Power path wired: `BATTERY/DC IN + -> INA219 -> relay -> ROUTER+`
+- Negative return wired: `BATTERY/DC IN - -> ROUTER-`
+- Tobsun wired to battery/DC input
+- `5V` and `GND` Wago built
+- Capacitors across `5V` and `GND`
+- XIAO powered from `5V/VIN`
+- `3V3 / DATA / GND` sensor Wago built
+- `4.7k` pull-up installed
+- Both DS18B20 sensors landed on same bus
+- Relay control on `GPIO3`
+- INA219 I2C on `GPIO6/GPIO7`

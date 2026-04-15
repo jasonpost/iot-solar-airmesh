@@ -1,0 +1,175 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1400" viewBox="0 0 1800 1400">
+  <defs>
+    <style>
+      .bg { fill: #f7f4ec; }
+      .title { font: 700 34px "Trebuchet MS", sans-serif; fill: #1f2937; }
+      .subtitle { font: 400 20px "Trebuchet MS", sans-serif; fill: #4b5563; }
+      .section { font: 700 24px "Trebuchet MS", sans-serif; fill: #111827; }
+      .label { font: 700 20px "Trebuchet MS", sans-serif; fill: #111827; }
+      .text { font: 400 18px "Trebuchet MS", sans-serif; fill: #1f2937; }
+      .small { font: 400 16px "Trebuchet MS", sans-serif; fill: #4b5563; }
+      .box { fill: #ffffff; stroke: #334155; stroke-width: 2.5; rx: 16; ry: 16; }
+      .wago { fill: #eef6ff; stroke: #2563eb; stroke-width: 3; rx: 16; ry: 16; }
+      .note { fill: #fff7e8; stroke: #d97706; stroke-width: 2; rx: 14; ry: 14; }
+      .power { stroke: #c2410c; stroke-width: 5; fill: none; }
+      .ground { stroke: #111827; stroke-width: 5; fill: none; }
+      .logic { stroke: #059669; stroke-width: 4; fill: none; }
+      .i2c { stroke: #2563eb; stroke-width: 4; fill: none; }
+      .dash { stroke-dasharray: 10 8; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1800" height="1400"/>
+
+  <text x="50" y="55" class="title">Router Box Simple Bench Wiring</text>
+  <text x="50" y="88" class="subtitle">Build around four Wago groups. Wire the power path first, then the 5V bus, then the sensor bus.</text>
+
+  <rect x="50" y="120" width="1700" height="260" class="box"/>
+  <text x="75" y="160" class="section">1. Switched Router Power Path</text>
+
+  <rect x="90" y="205" width="220" height="120" class="wago"/>
+  <text x="120" y="245" class="label">Wago A</text>
+  <text x="120" y="278" class="text">SRC+</text>
+  <text x="120" y="306" class="text">SRC-</text>
+
+  <rect x="420" y="205" width="260" height="120" class="box"/>
+  <text x="450" y="245" class="label">INA219</text>
+  <text x="450" y="278" class="text">VIN+</text>
+  <text x="450" y="306" class="text">VIN-</text>
+
+  <rect x="790" y="205" width="240" height="120" class="box"/>
+  <text x="820" y="245" class="label">Relay</text>
+  <text x="820" y="278" class="text">COM</text>
+  <text x="820" y="306" class="text">NO</text>
+
+  <rect x="1140" y="205" width="220" height="120" class="wago"/>
+  <text x="1170" y="245" class="label">Wago D</text>
+  <text x="1170" y="278" class="text">ROUTER+</text>
+  <text x="1170" y="306" class="text">ROUTER-</text>
+
+  <rect x="1470" y="205" width="220" height="120" class="box"/>
+  <text x="1500" y="245" class="label">Router</text>
+  <text x="1500" y="278" class="text">+</text>
+  <text x="1500" y="306" class="text">-</text>
+
+  <line x1="310" y1="255" x2="420" y2="255" class="power"/>
+  <line x1="680" y1="285" x2="790" y2="285" class="power"/>
+  <line x1="1030" y1="285" x2="1140" y2="255" class="power"/>
+  <line x1="1360" y1="255" x2="1470" y2="255" class="power"/>
+  <line x1="310" y1="305" x2="1470" y2="305" class="ground"/>
+
+  <text x="505" y="190" class="small">SRC+ to VIN+</text>
+  <text x="855" y="190" class="small">VIN- to COM</text>
+  <text x="1180" y="190" class="small">NO to ROUTER+</text>
+  <text x="760" y="340" class="small">SRC- goes straight to ROUTER-</text>
+
+  <rect x="50" y="420" width="1700" height="380" class="box"/>
+  <text x="75" y="460" class="section">2. 5V Power Bus</text>
+
+  <rect x="90" y="515" width="280" height="165" class="box"/>
+  <text x="120" y="555" class="label">5V Regulator</text>
+  <text x="120" y="588" class="text">IN+ / IN- from source</text>
+  <text x="120" y="618" class="text">5V OUT</text>
+  <text x="120" y="648" class="text">GND OUT</text>
+
+  <rect x="470" y="500" width="320" height="200" class="wago"/>
+  <text x="500" y="540" class="label">Wago B</text>
+  <text x="500" y="575" class="text">5V</text>
+  <text x="500" y="610" class="text">GND</text>
+  <text x="500" y="650" class="small">Main low-voltage power bus</text>
+
+  <rect x="900" y="500" width="240" height="160" class="box"/>
+  <text x="930" y="540" class="label">XIAO ESP32C3</text>
+  <text x="930" y="575" class="text">5V/VIN</text>
+  <text x="930" y="605" class="text">GND</text>
+  <text x="930" y="635" class="text">3V3 out</text>
+
+  <rect x="1230" y="500" width="220" height="150" class="box"/>
+  <text x="1260" y="540" class="label">Relay Power</text>
+  <text x="1260" y="575" class="text">VCC -> 5V</text>
+  <text x="1260" y="605" class="text">GND -> GND</text>
+
+  <rect x="1510" y="500" width="200" height="120" class="note"/>
+  <text x="1540" y="540" class="label">470uF</text>
+  <text x="1540" y="572" class="text">+ to 5V</text>
+  <text x="1540" y="602" class="text">- to GND</text>
+
+  <rect x="1510" y="650" width="200" height="120" class="note"/>
+  <text x="1540" y="690" class="label">0.1uF</text>
+  <text x="1540" y="722" class="text">across 5V/GND</text>
+
+  <line x1="370" y1="618" x2="470" y2="575" class="power"/>
+  <line x1="370" y1="648" x2="470" y2="610" class="ground"/>
+  <line x1="790" y1="575" x2="900" y2="575" class="power"/>
+  <line x1="790" y1="610" x2="900" y2="605" class="ground"/>
+  <line x1="790" y1="575" x2="1230" y2="575" class="power"/>
+  <line x1="790" y1="610" x2="1230" y2="605" class="ground"/>
+  <line x1="790" y1="575" x2="1510" y2="560" class="power"/>
+  <line x1="790" y1="610" x2="1510" y2="590" class="ground"/>
+  <line x1="790" y1="575" x2="1510" y2="710" class="power"/>
+  <line x1="790" y1="610" x2="1510" y2="710" class="ground"/>
+
+  <text x="1080" y="700" class="small">XIAO makes the 3V3 rail from the 5V input</text>
+  <text x="1460" y="790" class="small">Both capacitors connect across the same 5V and GND pair</text>
+
+  <rect x="50" y="840" width="1700" height="500" class="box"/>
+  <text x="75" y="880" class="section">3. Sensor And Control Wiring</text>
+
+  <rect x="90" y="940" width="260" height="230" class="box"/>
+  <text x="120" y="980" class="label">XIAO Pins</text>
+  <text x="120" y="1015" class="text">3V3</text>
+  <text x="120" y="1045" class="text">GPIO2 -> DATA</text>
+  <text x="120" y="1075" class="text">GPIO3 -> Relay IN</text>
+  <text x="120" y="1105" class="text">GPIO6 -> SDA</text>
+  <text x="120" y="1135" class="text">GPIO7 -> SCL</text>
+
+  <rect x="430" y="930" width="300" height="250" class="wago"/>
+  <text x="460" y="970" class="label">Wago C</text>
+  <text x="460" y="1005" class="text">3V3</text>
+  <text x="460" y="1035" class="text">DATA</text>
+  <text x="460" y="1065" class="text">GND</text>
+  <text x="460" y="1105" class="small">4.7k resistor between 3V3 and DATA</text>
+
+  <rect x="820" y="940" width="220" height="170" class="box"/>
+  <text x="850" y="980" class="label">INA219 Logic</text>
+  <text x="850" y="1015" class="text">VCC -> 3V3</text>
+  <text x="850" y="1045" class="text">SDA -> GPIO6</text>
+  <text x="850" y="1075" class="text">SCL -> GPIO7</text>
+
+  <rect x="1130" y="930" width="240" height="170" class="box"/>
+  <text x="1160" y="970" class="label">DS18B20 #1</text>
+  <text x="1160" y="1005" class="text">VDD -> 3V3</text>
+  <text x="1160" y="1035" class="text">DATA -> DATA</text>
+  <text x="1160" y="1065" class="text">GND -> GND</text>
+
+  <rect x="1130" y="1130" width="240" height="170" class="box"/>
+  <text x="1160" y="1170" class="label">DS18B20 #2</text>
+  <text x="1160" y="1205" class="text">VDD -> 3V3</text>
+  <text x="1160" y="1235" class="text">DATA -> DATA</text>
+  <text x="1160" y="1265" class="text">GND -> GND</text>
+
+  <rect x="1450" y="970" width="220" height="120" class="box"/>
+  <text x="1480" y="1010" class="label">Relay Control</text>
+  <text x="1480" y="1045" class="text">IN -> GPIO3</text>
+
+  <line x1="350" y1="1015" x2="430" y2="1005" class="logic"/>
+  <line x1="350" y1="1045" x2="430" y2="1035" class="logic"/>
+  <line x1="350" y1="1075" x2="1450" y2="1045" class="logic dash"/>
+  <line x1="350" y1="1105" x2="820" y2="1045" class="i2c"/>
+  <line x1="350" y1="1135" x2="820" y2="1075" class="i2c"/>
+
+  <line x1="730" y1="1005" x2="1130" y2="1005" class="logic"/>
+  <line x1="730" y1="1035" x2="1130" y2="1035" class="logic"/>
+  <line x1="730" y1="1065" x2="1130" y2="1065" class="ground"/>
+
+  <line x1="730" y1="1005" x2="1130" y2="1205" class="logic"/>
+  <line x1="730" y1="1035" x2="1130" y2="1235" class="logic"/>
+  <line x1="730" y1="1065" x2="1130" y2="1265" class="ground"/>
+
+  <line x1="730" y1="1005" x2="820" y2="1015" class="logic"/>
+  <text x="460" y="1140" class="small">Both sensors land on the same three rows</text>
+
+  <rect x="90" y="1210" width="920" height="95" class="note"/>
+  <text x="120" y="1248" class="label">Simple build rule</text>
+  <text x="120" y="1280" class="text">Treat Wago C like a tiny patch panel: one row for 3V3, one row for DATA, one row for GND.</text>
+</svg>
