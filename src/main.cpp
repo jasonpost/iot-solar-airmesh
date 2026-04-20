@@ -8,6 +8,7 @@
 #include <PubSubClient.h>
 
 #include "router_box_config.h"
+#include "victron_monitor.h"
 
 namespace {
 using namespace RouterBoxConfig;
@@ -21,6 +22,7 @@ OneWire oneWire(PIN_ONEWIRE);
 DallasTemperature temperatureSensors(&oneWire);
 Adafruit_INA219 ina219;
 DeviceAddress tempSensorAddresses[2];
+VictronMonitor victronMonitor;
 
 unsigned long lastPublishMs = 0;
 unsigned long lastWifiAttemptMs = 0;
@@ -28,6 +30,8 @@ unsigned long lastMqttAttemptMs = 0;
 bool ina219Ready = false;
 bool temperaturesReady = false;
 uint8_t temperatureSensorCount = 0;
+bool victronLinkStatePublished = false;
+bool victronLinkOnline = false;
 constexpr char kTopicAvailability[] = "littlelodge/routerbox/availability";
 constexpr char kTopicRelayPinLevel[] = "littlelodge/routerbox/router_relay/pin_level";
 constexpr char kTopicTempSensorCount[] = "littlelodge/routerbox/temp/debug/count";
@@ -42,6 +46,8 @@ void logLine(const String &message) {
 bool publishRetained(const char *topic, const String &payload);
 bool publishLogged(const char *topic, const String &payload);
 void publishHomeAssistantDiscovery();
+void publishVictronTelemetry(bool forcePublish);
+bool ensureMqttConnected();
 
 const char *routerPowerStateString() {
   return desiredRouterPowered ? "ON" : "OFF";
@@ -92,6 +98,11 @@ String discoveryDeviceJson() {
          "\"],\"name\":\"Router Box\",\"mf\":\"Jason Post\",\"mdl\":\"Seeed XIAO ESP32C3 Router Box\"}";
 }
 
+String discoveryVictronDeviceJson() {
+  return String("{\"ids\":[\"") + MQTT_CLIENT_ID +
+         "_victron\"],\"name\":\"Victron SmartSolar\",\"mf\":\"Victron Energy\",\"mdl\":\"SmartSolar BLE\"}";
+}
+
 String discoveryAvailabilityJson() {
   return String("\"availability_topic\":\"") + kTopicAvailability +
          "\",\"payload_available\":\"online\",\"payload_not_available\":\"offline\"";
@@ -106,6 +117,7 @@ void publishDiscoveryConfig(const char *component, const char *objectId,
 
 void publishHomeAssistantDiscovery() {
   const String device = discoveryDeviceJson();
+  const String victronDevice = discoveryVictronDeviceJson();
   const String availability = discoveryAvailabilityJson();
 
   publishDiscoveryConfig(
@@ -162,6 +174,80 @@ void publishHomeAssistantDiscovery() {
           "\"stat_t\":\"" + TOPIC_ROUTER_WATTS +
           "\",\"dev_cla\":\"power\",\"unit_of_meas\":\"W\",\"stat_cla\":\"measurement\","
           + availability + ",\"dev\":" + device + "}");
+
+  if (VICTRON_ENABLED) {
+    publishDiscoveryConfig(
+        "sensor",
+        "victron_battery_voltage",
+        String("{\"name\":\"Victron Battery Voltage\",\"uniq_id\":\"router_box_victron_battery_voltage\",") +
+            "\"stat_t\":\"" + TOPIC_VICTRON_BATTERY_VOLTS +
+            "\",\"dev_cla\":\"voltage\",\"unit_of_meas\":\"V\",\"stat_cla\":\"measurement\","
+            + availability + ",\"dev\":" + victronDevice + "}");
+
+    publishDiscoveryConfig(
+        "sensor",
+        "victron_charge_current",
+        String("{\"name\":\"Victron Charge Current\",\"uniq_id\":\"router_box_victron_charge_current\",") +
+            "\"stat_t\":\"" + TOPIC_VICTRON_CHARGE_AMPS +
+            "\",\"dev_cla\":\"current\",\"unit_of_meas\":\"A\",\"stat_cla\":\"measurement\","
+            + availability + ",\"dev\":" + victronDevice + "}");
+
+    publishDiscoveryConfig(
+        "sensor",
+        "victron_solar_power",
+        String("{\"name\":\"Victron Solar Power\",\"uniq_id\":\"router_box_victron_solar_power\",") +
+            "\"stat_t\":\"" + TOPIC_VICTRON_SOLAR_WATTS +
+            "\",\"dev_cla\":\"power\",\"unit_of_meas\":\"W\",\"stat_cla\":\"measurement\","
+            + availability + ",\"dev\":" + victronDevice + "}");
+
+    publishDiscoveryConfig(
+        "sensor",
+        "victron_yield_today",
+        String("{\"name\":\"Victron Yield Today\",\"uniq_id\":\"router_box_victron_yield_today\",") +
+            "\"stat_t\":\"" + TOPIC_VICTRON_YIELD_TODAY_WH +
+            "\",\"unit_of_meas\":\"Wh\",\"stat_cla\":\"total_increasing\"," +
+            availability + ",\"dev\":" + victronDevice + "}");
+
+    publishDiscoveryConfig(
+        "sensor",
+        "victron_load_current",
+        String("{\"name\":\"Victron Load Current\",\"uniq_id\":\"router_box_victron_load_current\",") +
+            "\"stat_t\":\"" + TOPIC_VICTRON_LOAD_AMPS +
+            "\",\"dev_cla\":\"current\",\"unit_of_meas\":\"A\",\"stat_cla\":\"measurement\","
+            + availability + ",\"dev\":" + victronDevice + "}");
+
+    publishDiscoveryConfig(
+        "sensor",
+        "victron_charge_state",
+        String("{\"name\":\"Victron Charge State\",\"uniq_id\":\"router_box_victron_charge_state\",") +
+            "\"stat_t\":\"" + TOPIC_VICTRON_CHARGE_STATE +
+            "\",\"icon\":\"mdi:solar-power\"," + availability +
+            ",\"dev\":" + victronDevice + "}");
+
+    publishDiscoveryConfig(
+        "sensor",
+        "victron_error_code",
+        String("{\"name\":\"Victron Error Code\",\"uniq_id\":\"router_box_victron_error_code\",") +
+            "\"stat_t\":\"" + TOPIC_VICTRON_ERROR_CODE +
+            "\",\"stat_cla\":\"measurement\",\"icon\":\"mdi:alert-circle-outline\"," +
+            availability + ",\"dev\":" + victronDevice + "}");
+
+    publishDiscoveryConfig(
+        "sensor",
+        "victron_rssi",
+        String("{\"name\":\"Victron BLE RSSI\",\"uniq_id\":\"router_box_victron_rssi\",") +
+            "\"stat_t\":\"" + TOPIC_VICTRON_RSSI +
+            "\",\"dev_cla\":\"signal_strength\",\"unit_of_meas\":\"dBm\",\"stat_cla\":\"measurement\","
+            + availability + ",\"dev\":" + victronDevice + "}");
+
+    publishDiscoveryConfig(
+        "binary_sensor",
+        "victron_link",
+        String("{\"name\":\"Victron Link\",\"uniq_id\":\"router_box_victron_link\",") +
+            "\"stat_t\":\"" + TOPIC_VICTRON_LINK_STATE +
+            "\",\"pl_on\":\"online\",\"pl_off\":\"stale\"," + availability +
+            ",\"dev\":" + victronDevice + "}");
+  }
 }
 
 void publishRelayState() {
@@ -174,6 +260,59 @@ void publishAvailability(const char *status) {
 
 void publishStatus(const char *status) {
   publishRetained(TOPIC_STATUS, status);
+}
+
+void publishVictronLinkState(bool online) {
+  victronLinkStatePublished = true;
+  victronLinkOnline = online;
+  publishRetained(TOPIC_VICTRON_LINK_STATE, online ? "online" : "stale");
+}
+
+void publishVictronTelemetry(bool forcePublish) {
+  if (!VICTRON_ENABLED || !ensureMqttConnected()) {
+    return;
+  }
+
+  const unsigned long now = millis();
+  const bool stale = victronMonitor.isStale(now);
+  if (stale) {
+    if (!victronLinkStatePublished || victronLinkOnline) {
+      publishVictronLinkState(false);
+    }
+    return;
+  }
+
+  if (!forcePublish && !victronMonitor.hasPendingPublish()) {
+    return;
+  }
+
+  if (!victronLinkStatePublished || !victronLinkOnline) {
+    publishVictronLinkState(true);
+  }
+
+  const VictronTelemetry &telemetry = victronMonitor.telemetry();
+  if (!isnan(telemetry.batteryVoltage)) {
+    publishRetained(TOPIC_VICTRON_BATTERY_VOLTS, String(telemetry.batteryVoltage, 2));
+  }
+  if (!isnan(telemetry.chargeCurrent)) {
+    publishRetained(TOPIC_VICTRON_CHARGE_AMPS, String(telemetry.chargeCurrent, 1));
+  }
+  if (!isnan(telemetry.solarPower)) {
+    publishRetained(TOPIC_VICTRON_SOLAR_WATTS, String(telemetry.solarPower, 0));
+  }
+  if (!isnan(telemetry.yieldTodayWh)) {
+    publishRetained(TOPIC_VICTRON_YIELD_TODAY_WH, String(telemetry.yieldTodayWh, 0));
+  }
+  if (!isnan(telemetry.loadCurrent)) {
+    publishRetained(TOPIC_VICTRON_LOAD_AMPS, String(telemetry.loadCurrent, 1));
+  }
+
+  publishRetained(TOPIC_VICTRON_CHARGE_STATE,
+                  VictronMonitor::chargeStateName(telemetry.chargeStateCode));
+  publishRetained(TOPIC_VICTRON_CHARGE_STATE_CODE, String(telemetry.chargeStateCode));
+  publishRetained(TOPIC_VICTRON_ERROR_CODE, String(telemetry.chargerErrorCode));
+  publishRetained(TOPIC_VICTRON_RSSI, String(telemetry.rssi));
+  victronMonitor.markPublished();
 }
 
 void restartRouter() {
@@ -325,6 +464,7 @@ void publishTelemetry() {
     publishRetained(TOPIC_ROUTER_WATTS, String(watts, 3));
   }
 
+  publishVictronTelemetry(true);
   publishRelayState();
 }
 
@@ -416,6 +556,7 @@ void setup() {
   mqttClient.setBufferSize(kMqttBufferSize);
   mqttClient.setCallback(mqttCallback);
   initializeSensors();
+  victronMonitor.begin();
 
   publishStatus("booting");
   ensureWifiConnected();
@@ -427,6 +568,8 @@ void setup() {
 void loop() {
   ensureMqttConnected();
   mqttClient.loop();
+  victronMonitor.poll();
+  publishVictronTelemetry(false);
 
   const unsigned long now = millis();
   if (now - lastPublishMs >= SENSOR_PUBLISH_INTERVAL_MS) {
