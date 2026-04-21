@@ -24,6 +24,28 @@ void logVictronLine(const String &message) {
   Serial.println("[victron] " + message);
 }
 
+bool sameFloatValue(float left, float right) {
+  if (isnan(left) && isnan(right)) {
+    return true;
+  }
+
+  if (isnan(left) || isnan(right)) {
+    return false;
+  }
+
+  return left == right;
+}
+
+bool sameTelemetryPayload(const VictronTelemetry &left, const VictronTelemetry &right) {
+  return left.chargeStateCode == right.chargeStateCode &&
+         left.chargerErrorCode == right.chargerErrorCode &&
+         sameFloatValue(left.batteryVoltage, right.batteryVoltage) &&
+         sameFloatValue(left.chargeCurrent, right.chargeCurrent) &&
+         sameFloatValue(left.solarPower, right.solarPower) &&
+         sameFloatValue(left.yieldTodayWh, right.yieldTodayWh) &&
+         sameFloatValue(left.loadCurrent, right.loadCurrent) && left.rssi == right.rssi;
+}
+
 class BitReader {
  public:
   BitReader(const uint8_t *data, size_t length) : data_(data), length_(length) {}
@@ -187,9 +209,10 @@ void VictronMonitor::handleAdvertisement(const String &address, int rssi,
     return;
   }
 
-  candidate.valid = true;
-  candidate.hasPendingPublish = true;
   candidate.rssi = rssi;
+  const bool changed = !telemetry_.valid || !sameTelemetryPayload(candidate, telemetry_);
+  candidate.valid = true;
+  candidate.hasPendingPublish = changed;
   candidate.lastUpdateMs = millis();
   telemetry_ = candidate;
 }

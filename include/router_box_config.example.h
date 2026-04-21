@@ -15,6 +15,8 @@ constexpr char MQTT_CLIENT_ID[] = "router-box";
 constexpr bool VICTRON_ENABLED = false;
 constexpr char VICTRON_KEY[] = "replace-with-32-char-hex-key";
 constexpr char VICTRON_MAC_ADDRESS[] = "replace-with-12-hex-char-mac";
+constexpr char VICTRON_DEVICE_ID[] = "victron_solar_1";
+constexpr char VICTRON_DEVICE_NAME[] = "Victron Solar 1";
 
 constexpr char TOPIC_TEMP_BOX1[] = "littlelodge/routerbox/temp/box1";
 constexpr char TOPIC_TEMP_BOX2[] = "littlelodge/routerbox/temp/box2";

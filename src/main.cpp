@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <math.h>
 #include <WiFi.h>
 #include <Wire.h>
 
@@ -37,7 +38,10 @@ constexpr char kTopicRelayPinLevel[] = "littlelodge/routerbox/router_relay/pin_l
 constexpr char kTopicTempSensorCount[] = "littlelodge/routerbox/temp/debug/count";
 constexpr char kTopicTempSensorState[] = "littlelodge/routerbox/temp/debug/state";
 constexpr char kDiscoveryNodeId[] = "router_box";
+constexpr char kVictronDiscoveryNodePrefix[] = "router_box_";
 constexpr uint16_t kMqttBufferSize = 1024;
+constexpr float kIna219CurrentDeadbandAmps = 0.01f;
+constexpr float kIna219PowerDeadbandWatts = 0.05f;
 
 void logLine(const String &message) {
   Serial.println("[router-box] " + message);
@@ -99,8 +103,9 @@ String discoveryDeviceJson() {
 }
 
 String discoveryVictronDeviceJson() {
-  return String("{\"ids\":[\"") + MQTT_CLIENT_ID +
-         "_victron\"],\"name\":\"Victron SmartSolar\",\"mf\":\"Victron Energy\",\"mdl\":\"SmartSolar BLE\"}";
+  return String("{\"ids\":[\"") + MQTT_CLIENT_ID + "_" + VICTRON_DEVICE_ID +
+         "\"],\"name\":\"" + VICTRON_DEVICE_NAME +
+         "\",\"mf\":\"Victron Energy\",\"mdl\":\"SmartSolar BLE\"}";
 }
 
 String discoveryAvailabilityJson() {
@@ -112,6 +117,14 @@ void publishDiscoveryConfig(const char *component, const char *objectId,
                             const String &payload) {
   const String topic = String("homeassistant/") + component + "/" + kDiscoveryNodeId +
                        "/" + objectId + "/config";
+  publishLogged(topic.c_str(), payload);
+}
+
+void publishVictronDiscoveryConfig(const char *component, const char *objectId,
+                                   const String &payload) {
+  const String topic = String("homeassistant/") + component + "/" +
+                       kVictronDiscoveryNodePrefix + VICTRON_DEVICE_ID + "/" +
+                       objectId + "/config";
   publishLogged(topic.c_str(), payload);
 }
 
@@ -176,74 +189,92 @@ void publishHomeAssistantDiscovery() {
           + availability + ",\"dev\":" + device + "}");
 
   if (VICTRON_ENABLED) {
-    publishDiscoveryConfig(
+    publishVictronDiscoveryConfig(
         "sensor",
         "victron_battery_voltage",
-        String("{\"name\":\"Victron Battery Voltage\",\"uniq_id\":\"router_box_victron_battery_voltage\",") +
+        (String("{\"name\":\"") + VICTRON_DEVICE_NAME +
+         " Battery Voltage\",\"uniq_id\":\"" + VICTRON_DEVICE_ID +
+         "_battery_voltage\",") +
             "\"stat_t\":\"" + TOPIC_VICTRON_BATTERY_VOLTS +
-            "\",\"dev_cla\":\"voltage\",\"unit_of_meas\":\"V\",\"stat_cla\":\"measurement\","
-            + availability + ",\"dev\":" + victronDevice + "}");
+            "\",\"dev_cla\":\"voltage\",\"unit_of_meas\":\"V\",\"stat_cla\":\"measurement\"," +
+            availability + ",\"dev\":" + victronDevice + "}");
 
-    publishDiscoveryConfig(
+    publishVictronDiscoveryConfig(
         "sensor",
         "victron_charge_current",
-        String("{\"name\":\"Victron Charge Current\",\"uniq_id\":\"router_box_victron_charge_current\",") +
+        (String("{\"name\":\"") + VICTRON_DEVICE_NAME +
+         " Charge Current\",\"uniq_id\":\"" + VICTRON_DEVICE_ID +
+         "_charge_current\",") +
             "\"stat_t\":\"" + TOPIC_VICTRON_CHARGE_AMPS +
-            "\",\"dev_cla\":\"current\",\"unit_of_meas\":\"A\",\"stat_cla\":\"measurement\","
-            + availability + ",\"dev\":" + victronDevice + "}");
+            "\",\"dev_cla\":\"current\",\"unit_of_meas\":\"A\",\"stat_cla\":\"measurement\"," +
+            availability + ",\"dev\":" + victronDevice + "}");
 
-    publishDiscoveryConfig(
+    publishVictronDiscoveryConfig(
         "sensor",
         "victron_solar_power",
-        String("{\"name\":\"Victron Solar Power\",\"uniq_id\":\"router_box_victron_solar_power\",") +
+        (String("{\"name\":\"") + VICTRON_DEVICE_NAME +
+         " Solar Power\",\"uniq_id\":\"" + VICTRON_DEVICE_ID +
+         "_solar_power\",") +
             "\"stat_t\":\"" + TOPIC_VICTRON_SOLAR_WATTS +
-            "\",\"dev_cla\":\"power\",\"unit_of_meas\":\"W\",\"stat_cla\":\"measurement\","
-            + availability + ",\"dev\":" + victronDevice + "}");
+            "\",\"dev_cla\":\"power\",\"unit_of_meas\":\"W\",\"stat_cla\":\"measurement\"," +
+            availability + ",\"dev\":" + victronDevice + "}");
 
-    publishDiscoveryConfig(
+    publishVictronDiscoveryConfig(
         "sensor",
         "victron_yield_today",
-        String("{\"name\":\"Victron Yield Today\",\"uniq_id\":\"router_box_victron_yield_today\",") +
+        (String("{\"name\":\"") + VICTRON_DEVICE_NAME +
+         " Yield Today\",\"uniq_id\":\"" + VICTRON_DEVICE_ID +
+         "_yield_today\",") +
             "\"stat_t\":\"" + TOPIC_VICTRON_YIELD_TODAY_WH +
             "\",\"unit_of_meas\":\"Wh\",\"stat_cla\":\"total_increasing\"," +
             availability + ",\"dev\":" + victronDevice + "}");
 
-    publishDiscoveryConfig(
+    publishVictronDiscoveryConfig(
         "sensor",
         "victron_load_current",
-        String("{\"name\":\"Victron Load Current\",\"uniq_id\":\"router_box_victron_load_current\",") +
+        (String("{\"name\":\"") + VICTRON_DEVICE_NAME +
+         " Load Current\",\"uniq_id\":\"" + VICTRON_DEVICE_ID +
+         "_load_current\",") +
             "\"stat_t\":\"" + TOPIC_VICTRON_LOAD_AMPS +
-            "\",\"dev_cla\":\"current\",\"unit_of_meas\":\"A\",\"stat_cla\":\"measurement\","
-            + availability + ",\"dev\":" + victronDevice + "}");
+            "\",\"dev_cla\":\"current\",\"unit_of_meas\":\"A\",\"stat_cla\":\"measurement\"," +
+            availability + ",\"dev\":" + victronDevice + "}");
 
-    publishDiscoveryConfig(
+    publishVictronDiscoveryConfig(
         "sensor",
         "victron_charge_state",
-        String("{\"name\":\"Victron Charge State\",\"uniq_id\":\"router_box_victron_charge_state\",") +
+        (String("{\"name\":\"") + VICTRON_DEVICE_NAME +
+         " Charge State\",\"uniq_id\":\"" + VICTRON_DEVICE_ID +
+         "_charge_state\",") +
             "\"stat_t\":\"" + TOPIC_VICTRON_CHARGE_STATE +
             "\",\"icon\":\"mdi:solar-power\"," + availability +
             ",\"dev\":" + victronDevice + "}");
 
-    publishDiscoveryConfig(
+    publishVictronDiscoveryConfig(
         "sensor",
         "victron_error_code",
-        String("{\"name\":\"Victron Error Code\",\"uniq_id\":\"router_box_victron_error_code\",") +
+        (String("{\"name\":\"") + VICTRON_DEVICE_NAME +
+         " Error Code\",\"uniq_id\":\"" + VICTRON_DEVICE_ID +
+         "_error_code\",") +
             "\"stat_t\":\"" + TOPIC_VICTRON_ERROR_CODE +
             "\",\"stat_cla\":\"measurement\",\"icon\":\"mdi:alert-circle-outline\"," +
             availability + ",\"dev\":" + victronDevice + "}");
 
-    publishDiscoveryConfig(
+    publishVictronDiscoveryConfig(
         "sensor",
         "victron_rssi",
-        String("{\"name\":\"Victron BLE RSSI\",\"uniq_id\":\"router_box_victron_rssi\",") +
+        (String("{\"name\":\"") + VICTRON_DEVICE_NAME +
+         " BLE RSSI\",\"uniq_id\":\"" + VICTRON_DEVICE_ID +
+         "_rssi\",") +
             "\"stat_t\":\"" + TOPIC_VICTRON_RSSI +
-            "\",\"dev_cla\":\"signal_strength\",\"unit_of_meas\":\"dBm\",\"stat_cla\":\"measurement\","
-            + availability + ",\"dev\":" + victronDevice + "}");
+            "\",\"dev_cla\":\"signal_strength\",\"unit_of_meas\":\"dBm\",\"stat_cla\":\"measurement\"," +
+            availability + ",\"dev\":" + victronDevice + "}");
 
-    publishDiscoveryConfig(
+    publishVictronDiscoveryConfig(
         "binary_sensor",
         "victron_link",
-        String("{\"name\":\"Victron Link\",\"uniq_id\":\"router_box_victron_link\",") +
+        (String("{\"name\":\"") + VICTRON_DEVICE_NAME +
+         " Link\",\"uniq_id\":\"" + VICTRON_DEVICE_ID +
+         "_link\",") +
             "\"stat_t\":\"" + TOPIC_VICTRON_LINK_STATE +
             "\",\"pl_on\":\"online\",\"pl_off\":\"stale\"," + availability +
             ",\"dev\":" + victronDevice + "}");
@@ -457,10 +488,18 @@ void publishTelemetry() {
     const float shuntMillivolts = ina219.getShuntVoltage_mV();
     const float currentMilliamps = ina219.getCurrent_mA();
     const float loadVoltage = busVoltage + (shuntMillivolts / 1000.0f);
-    const float watts = loadVoltage * (currentMilliamps / 1000.0f);
+    float currentAmps = currentMilliamps / 1000.0f;
+    float watts = loadVoltage * currentAmps;
+
+    if (fabsf(currentAmps) < kIna219CurrentDeadbandAmps) {
+      currentAmps = 0.0f;
+    }
+    if (fabsf(watts) < kIna219PowerDeadbandWatts) {
+      watts = 0.0f;
+    }
 
     publishRetained(TOPIC_ROUTER_VOLTS, String(loadVoltage, 3));
-    publishRetained(TOPIC_ROUTER_AMPS, String(currentMilliamps / 1000.0f, 3));
+    publishRetained(TOPIC_ROUTER_AMPS, String(currentAmps, 3));
     publishRetained(TOPIC_ROUTER_WATTS, String(watts, 3));
   }
 
