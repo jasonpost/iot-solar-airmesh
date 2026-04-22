@@ -150,10 +150,12 @@ void VictronMonitor::poll() {
     return;
   }
 
-  lastScanStartedMs_ = now;
   if (!scan->start(VICTRON_SCAN_DURATION_SECONDS, handleVictronScanComplete, false)) {
     logVictronLine("Failed to start BLE scan");
+    return;
   }
+
+  lastScanStartedMs_ = now;
 }
 
 bool VictronMonitor::enabled() const {

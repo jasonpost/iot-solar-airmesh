@@ -40,6 +40,8 @@ bool tempSensorReadingValid[2] = {false, false};
 bool tempConversionInProgress = false;
 unsigned long tempConversionRequestedMs = 0;
 unsigned long lastTemperatureSampleMs = 0;
+unsigned long lastTemperatureReadSuccessMs = 0;
+unsigned long lastIna219ReadSuccessMs = 0;
 bool victronLinkStatePublished = false;
 bool victronLinkOnline = false;
 bool wifiConnectInProgress = false;
@@ -63,6 +65,8 @@ constexpr uint32_t kLocalSensorRetryIntervalMs = 10000;
 constexpr uint32_t kDs18b20ConversionMs = 750;
 constexpr uint32_t kTemperatureSampleIntervalMs = 5000;
 constexpr uint16_t kMqttSocketTimeoutSeconds = 1;
+constexpr uint32_t kTemperatureReadFailureReinitMs = 15000;
+constexpr uint32_t kIna219ReadFailureReinitMs = 15000;
 
 void logLine(const String &message) {
   Serial.println("[router-box] " + message);
@@ -94,6 +98,10 @@ void ensureLocalSensorsInitialized();
 void processRouterRestart();
 void processTemperatureSensors();
 void ensureVictronTelemetryCleared();
+bool clearVictronTelemetryTopic(const char *topic);
+bool hasAnyValidTemperatureReading();
+bool ina219ReadingLooksValid(float busVoltage, float shuntMillivolts, float currentMilliamps,
+                             float loadVoltage, float currentAmps, float watts);
 
 void cancelRouterRestart() {
   routerRestartInProgress = false;
@@ -168,6 +176,18 @@ bool publishInt(const char *topic, int value) {
   char payload[16];
   snprintf(payload, sizeof(payload), "%d", value);
   return publishLogged(topic, payload);
+}
+
+bool hasAnyValidTemperatureReading() {
+  return tempSensorReadingValid[0] || tempSensorReadingValid[1];
+}
+
+bool ina219ReadingLooksValid(float busVoltage, float shuntMillivolts, float currentMilliamps,
+                             float loadVoltage, float currentAmps, float watts) {
+  return !isnan(busVoltage) && !isnan(shuntMillivolts) && !isnan(currentMilliamps) &&
+         !isnan(loadVoltage) && !isnan(currentAmps) && !isnan(watts) &&
+         !isinf(busVoltage) && !isinf(shuntMillivolts) && !isinf(currentMilliamps) &&
+         !isinf(loadVoltage) && !isinf(currentAmps) && !isinf(watts);
 }
 
 String discoveryDeviceJson() {
@@ -374,16 +394,24 @@ void publishVictronLinkState(bool online) {
 
 void clearVictronTelemetryTopics() {
   bool cleared = true;
-  cleared = clearRetained(TOPIC_VICTRON_BATTERY_VOLTS) && cleared;
-  cleared = clearRetained(TOPIC_VICTRON_CHARGE_AMPS) && cleared;
-  cleared = clearRetained(TOPIC_VICTRON_SOLAR_WATTS) && cleared;
-  cleared = clearRetained(TOPIC_VICTRON_YIELD_TODAY_WH) && cleared;
-  cleared = clearRetained(TOPIC_VICTRON_LOAD_AMPS) && cleared;
-  cleared = clearRetained(TOPIC_VICTRON_CHARGE_STATE) && cleared;
-  cleared = clearRetained(TOPIC_VICTRON_CHARGE_STATE_CODE) && cleared;
-  cleared = clearRetained(TOPIC_VICTRON_ERROR_CODE) && cleared;
-  cleared = clearRetained(TOPIC_VICTRON_RSSI) && cleared;
+  cleared = clearVictronTelemetryTopic(TOPIC_VICTRON_BATTERY_VOLTS) && cleared;
+  cleared = clearVictronTelemetryTopic(TOPIC_VICTRON_CHARGE_AMPS) && cleared;
+  cleared = clearVictronTelemetryTopic(TOPIC_VICTRON_SOLAR_WATTS) && cleared;
+  cleared = clearVictronTelemetryTopic(TOPIC_VICTRON_YIELD_TODAY_WH) && cleared;
+  cleared = clearVictronTelemetryTopic(TOPIC_VICTRON_LOAD_AMPS) && cleared;
+  cleared = clearVictronTelemetryTopic(TOPIC_VICTRON_CHARGE_STATE) && cleared;
+  cleared = clearVictronTelemetryTopic(TOPIC_VICTRON_CHARGE_STATE_CODE) && cleared;
+  cleared = clearVictronTelemetryTopic(TOPIC_VICTRON_ERROR_CODE) && cleared;
+  cleared = clearVictronTelemetryTopic(TOPIC_VICTRON_RSSI) && cleared;
   victronTelemetryClearPending = !cleared;
+}
+
+bool clearVictronTelemetryTopic(const char *topic) {
+  const bool success = clearRetained(topic);
+  if (!success) {
+    victronTelemetryClearPending = true;
+  }
+  return success;
 }
 
 void ensureVictronTelemetryCleared() {
@@ -424,27 +452,27 @@ void publishVictronTelemetry(bool forcePublish) {
   if (!isnan(telemetry.batteryVoltage)) {
     publishFloat(TOPIC_VICTRON_BATTERY_VOLTS, telemetry.batteryVoltage, 2);
   } else {
-    clearRetained(TOPIC_VICTRON_BATTERY_VOLTS);
+    clearVictronTelemetryTopic(TOPIC_VICTRON_BATTERY_VOLTS);
   }
   if (!isnan(telemetry.chargeCurrent)) {
     publishFloat(TOPIC_VICTRON_CHARGE_AMPS, telemetry.chargeCurrent, 1);
   } else {
-    clearRetained(TOPIC_VICTRON_CHARGE_AMPS);
+    clearVictronTelemetryTopic(TOPIC_VICTRON_CHARGE_AMPS);
   }
   if (!isnan(telemetry.solarPower)) {
     publishFloat(TOPIC_VICTRON_SOLAR_WATTS, telemetry.solarPower, 0);
   } else {
-    clearRetained(TOPIC_VICTRON_SOLAR_WATTS);
+    clearVictronTelemetryTopic(TOPIC_VICTRON_SOLAR_WATTS);
   }
   if (!isnan(telemetry.yieldTodayWh)) {
     publishFloat(TOPIC_VICTRON_YIELD_TODAY_WH, telemetry.yieldTodayWh, 0);
   } else {
-    clearRetained(TOPIC_VICTRON_YIELD_TODAY_WH);
+    clearVictronTelemetryTopic(TOPIC_VICTRON_YIELD_TODAY_WH);
   }
   if (!isnan(telemetry.loadCurrent)) {
     publishFloat(TOPIC_VICTRON_LOAD_AMPS, telemetry.loadCurrent, 1);
   } else {
-    clearRetained(TOPIC_VICTRON_LOAD_AMPS);
+    clearVictronTelemetryTopic(TOPIC_VICTRON_LOAD_AMPS);
   }
 
   publishRetained(TOPIC_VICTRON_CHARGE_STATE,
@@ -578,7 +606,8 @@ void publishTelemetry() {
   publishInt(kTopicTempSensorCount, temperatureSensorCount);
 
   if (temperaturesReady) {
-    publishLogged(kTopicTempSensorState, "ready");
+    publishLogged(kTopicTempSensorState,
+                  hasAnyValidTemperatureReading() ? "ready" : "waiting_for_valid_read");
 
     const char *const tempTopics[2] = {TOPIC_TEMP_BOX1, TOPIC_TEMP_BOX2};
     for (uint8_t i = 0; i < 2; ++i) {
@@ -608,19 +637,31 @@ void publishTelemetry() {
     float currentAmps = currentMilliamps / 1000.0f;
     float watts = loadVoltage * currentAmps;
 
-    if (fabsf(currentAmps) < kIna219CurrentDeadbandAmps) {
-      currentAmps = 0.0f;
-    }
-    if (fabsf(watts) < kIna219PowerDeadbandWatts) {
-      watts = 0.0f;
-    }
+    if (!ina219ReadingLooksValid(busVoltage, shuntMillivolts, currentMilliamps, loadVoltage,
+                                 currentAmps, watts)) {
+      logLine("INA219 read failed sanity check");
+      ina219Ready = false;
+      publishLogged(kTopicIna219State, "read_failed");
+      clearRetained(TOPIC_ROUTER_VOLTS);
+      clearRetained(TOPIC_ROUTER_AMPS);
+      clearRetained(TOPIC_ROUTER_WATTS);
+    } else {
+      lastIna219ReadSuccessMs = millis();
 
-    logFormatted("INA219 loadV=%.3f currentA=%.3f watts=%.3f", loadVoltage, currentAmps,
-                 watts);
-    publishLogged(kTopicIna219State, "ready");
-    publishFloat(TOPIC_ROUTER_VOLTS, loadVoltage, 3);
-    publishFloat(TOPIC_ROUTER_AMPS, currentAmps, 3);
-    publishFloat(TOPIC_ROUTER_WATTS, watts, 3);
+      if (fabsf(currentAmps) < kIna219CurrentDeadbandAmps) {
+        currentAmps = 0.0f;
+      }
+      if (fabsf(watts) < kIna219PowerDeadbandWatts) {
+        watts = 0.0f;
+      }
+
+      logFormatted("INA219 loadV=%.3f currentA=%.3f watts=%.3f", loadVoltage, currentAmps,
+                   watts);
+      publishLogged(kTopicIna219State, "ready");
+      publishFloat(TOPIC_ROUTER_VOLTS, loadVoltage, 3);
+      publishFloat(TOPIC_ROUTER_AMPS, currentAmps, 3);
+      publishFloat(TOPIC_ROUTER_WATTS, watts, 3);
+    }
   } else {
     logLine("Skipping INA219 publish because sensor was not initialized");
     publishLogged(kTopicIna219State, "not_ready");
@@ -681,6 +722,9 @@ void initializeIna219() {
   lastIna219InitAttemptMs = millis();
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
   ina219Ready = ina219.begin();
+  if (ina219Ready) {
+    lastIna219ReadSuccessMs = millis();
+  }
   logFormatted("INA219 ready: %s", ina219Ready ? "yes" : "no");
 }
 
@@ -699,6 +743,7 @@ void initializeTemperatureSensors() {
   tempConversionInProgress = false;
   tempConversionRequestedMs = 0;
   lastTemperatureSampleMs = 0;
+  lastTemperatureReadSuccessMs = 0;
   temperaturesReady = false;
   logFormatted("DS18B20 bus pin GPIO%u", PIN_ONEWIRE);
   logFormatted("DS18B20 count: %u", deviceCount);
@@ -733,10 +778,25 @@ void ensureLocalSensorsInitialized() {
     initializeIna219();
   }
 
+  if (ina219Ready && lastIna219ReadSuccessMs != 0 &&
+      now - lastIna219ReadSuccessMs >= kIna219ReadFailureReinitMs &&
+      now - lastIna219InitAttemptMs >= kLocalSensorRetryIntervalMs) {
+    logLine("Retrying INA219 initialization after repeated read failures");
+    initializeIna219();
+  }
+
   if (!temperaturesReady &&
       (lastTemperatureInitAttemptMs == 0 ||
        now - lastTemperatureInitAttemptMs >= kLocalSensorRetryIntervalMs)) {
     logLine("Retrying DS18B20 initialization");
+    initializeTemperatureSensors();
+    return;
+  }
+
+  if (temperaturesReady && !tempConversionInProgress && lastTemperatureReadSuccessMs != 0 &&
+      now - lastTemperatureReadSuccessMs >= kTemperatureReadFailureReinitMs &&
+      now - lastTemperatureInitAttemptMs >= kLocalSensorRetryIntervalMs) {
+    logLine("Retrying DS18B20 initialization after repeated read failures");
     initializeTemperatureSensors();
   }
 }
@@ -753,6 +813,7 @@ void processTemperatureSensors() {
       return;
     }
 
+    bool anyReadSucceeded = false;
     for (uint8_t i = 0; i < 2; ++i) {
       if (!tempSensorPresent[i]) {
         tempSensorReadingValid[i] = false;
@@ -764,6 +825,7 @@ void processTemperatureSensors() {
       if (tempC != DEVICE_DISCONNECTED_C) {
         latestTempSensorF[i] = DallasTemperature::toFahrenheit(tempC);
         tempSensorReadingValid[i] = true;
+        anyReadSucceeded = true;
         logFormatted("DS18B20 #%u tempF=%.2f", i + 1, latestTempSensorF[i]);
       } else {
         tempSensorReadingValid[i] = false;
@@ -774,6 +836,9 @@ void processTemperatureSensors() {
 
     tempConversionInProgress = false;
     lastTemperatureSampleMs = now;
+    if (anyReadSucceeded) {
+      lastTemperatureReadSuccessMs = now;
+    }
     return;
   }
 
