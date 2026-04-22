@@ -24,6 +24,10 @@ void logVictronLine(const String &message) {
   Serial.println("[victron] " + message);
 }
 
+void handleVictronScanComplete(NimBLEScanResults) {
+  NimBLEDevice::getScan()->clearResults();
+}
+
 bool sameFloatValue(float left, float right) {
   if (isnan(left) && isnan(right)) {
     return true;
@@ -136,15 +140,20 @@ void VictronMonitor::poll() {
     return;
   }
 
+  NimBLEScan *scan = NimBLEDevice::getScan();
+  if (scan->isScanning()) {
+    return;
+  }
+
   const unsigned long now = millis();
   if (now - lastScanStartedMs_ < VICTRON_SCAN_INTERVAL_MS) {
     return;
   }
 
   lastScanStartedMs_ = now;
-  NimBLEScan *scan = NimBLEDevice::getScan();
-  scan->start(VICTRON_SCAN_DURATION_SECONDS, false);
-  scan->clearResults();
+  if (!scan->start(VICTRON_SCAN_DURATION_SECONDS, handleVictronScanComplete, false)) {
+    logVictronLine("Failed to start BLE scan");
+  }
 }
 
 bool VictronMonitor::enabled() const {

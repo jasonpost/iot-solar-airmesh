@@ -30,16 +30,23 @@ VictronMonitor victronMonitor;
 unsigned long lastPublishMs = 0;
 unsigned long lastWifiAttemptMs = 0;
 unsigned long lastMqttAttemptMs = 0;
-unsigned long lastLocalSensorInitAttemptMs = 0;
+unsigned long lastIna219InitAttemptMs = 0;
+unsigned long lastTemperatureInitAttemptMs = 0;
 bool ina219Ready = false;
 bool temperaturesReady = false;
 uint8_t temperatureSensorCount = 0;
+float latestTempSensorF[2] = {NAN, NAN};
+bool tempSensorReadingValid[2] = {false, false};
+bool tempConversionInProgress = false;
+unsigned long tempConversionRequestedMs = 0;
+unsigned long lastTemperatureSampleMs = 0;
 bool victronLinkStatePublished = false;
 bool victronLinkOnline = false;
 bool wifiConnectInProgress = false;
 unsigned long wifiConnectStartedMs = 0;
 bool routerRestartInProgress = false;
 unsigned long routerRestartResumeMs = 0;
+bool victronTelemetryClearPending = false;
 constexpr char kTopicAvailability[] = "littlelodge/routerbox/availability";
 constexpr char kTopicRelayPinLevel[] = "littlelodge/routerbox/router_relay/pin_level";
 constexpr char kTopicTempSensorCount[] = "littlelodge/routerbox/temp/debug/count";
@@ -53,6 +60,9 @@ constexpr uint16_t kMqttBufferSize = 1024;
 constexpr float kIna219CurrentDeadbandAmps = 0.01f;
 constexpr float kIna219PowerDeadbandWatts = 0.05f;
 constexpr uint32_t kLocalSensorRetryIntervalMs = 10000;
+constexpr uint32_t kDs18b20ConversionMs = 750;
+constexpr uint32_t kTemperatureSampleIntervalMs = 5000;
+constexpr uint16_t kMqttSocketTimeoutSeconds = 1;
 
 void logLine(const String &message) {
   Serial.println("[router-box] " + message);
@@ -78,9 +88,12 @@ bool publishInt(const char *topic, int value);
 void publishHomeAssistantDiscovery();
 void publishVictronTelemetry(bool forcePublish);
 bool ensureMqttConnected();
-void initializeSensors();
+void initializeIna219();
+void initializeTemperatureSensors();
 void ensureLocalSensorsInitialized();
 void processRouterRestart();
+void processTemperatureSensors();
+void ensureVictronTelemetryCleared();
 
 void cancelRouterRestart() {
   routerRestartInProgress = false;
@@ -360,15 +373,26 @@ void publishVictronLinkState(bool online) {
 }
 
 void clearVictronTelemetryTopics() {
-  clearRetained(TOPIC_VICTRON_BATTERY_VOLTS);
-  clearRetained(TOPIC_VICTRON_CHARGE_AMPS);
-  clearRetained(TOPIC_VICTRON_SOLAR_WATTS);
-  clearRetained(TOPIC_VICTRON_YIELD_TODAY_WH);
-  clearRetained(TOPIC_VICTRON_LOAD_AMPS);
-  clearRetained(TOPIC_VICTRON_CHARGE_STATE);
-  clearRetained(TOPIC_VICTRON_CHARGE_STATE_CODE);
-  clearRetained(TOPIC_VICTRON_ERROR_CODE);
-  clearRetained(TOPIC_VICTRON_RSSI);
+  bool cleared = true;
+  cleared = clearRetained(TOPIC_VICTRON_BATTERY_VOLTS) && cleared;
+  cleared = clearRetained(TOPIC_VICTRON_CHARGE_AMPS) && cleared;
+  cleared = clearRetained(TOPIC_VICTRON_SOLAR_WATTS) && cleared;
+  cleared = clearRetained(TOPIC_VICTRON_YIELD_TODAY_WH) && cleared;
+  cleared = clearRetained(TOPIC_VICTRON_LOAD_AMPS) && cleared;
+  cleared = clearRetained(TOPIC_VICTRON_CHARGE_STATE) && cleared;
+  cleared = clearRetained(TOPIC_VICTRON_CHARGE_STATE_CODE) && cleared;
+  cleared = clearRetained(TOPIC_VICTRON_ERROR_CODE) && cleared;
+  cleared = clearRetained(TOPIC_VICTRON_RSSI) && cleared;
+  victronTelemetryClearPending = !cleared;
+}
+
+void ensureVictronTelemetryCleared() {
+  if (!victronTelemetryClearPending || !mqttClient.connected()) {
+    return;
+  }
+
+  logLine("Retrying stale Victron telemetry clears");
+  clearVictronTelemetryTopics();
 }
 
 void publishVictronTelemetry(bool forcePublish) {
@@ -383,6 +407,7 @@ void publishVictronTelemetry(bool forcePublish) {
       publishVictronLinkState(false);
       clearVictronTelemetryTopics();
     }
+    ensureVictronTelemetryCleared();
     return;
   }
 
@@ -393,6 +418,7 @@ void publishVictronTelemetry(bool forcePublish) {
   if (!victronLinkStatePublished || !victronLinkOnline) {
     publishVictronLinkState(true);
   }
+  victronTelemetryClearPending = false;
 
   const VictronTelemetry &telemetry = victronMonitor.telemetry();
   if (!isnan(telemetry.batteryVoltage)) {
@@ -547,12 +573,12 @@ void publishTelemetry() {
   }
 
   ensureLocalSensorsInitialized();
+  processTemperatureSensors();
 
   publishInt(kTopicTempSensorCount, temperatureSensorCount);
 
   if (temperaturesReady) {
     publishLogged(kTopicTempSensorState, "ready");
-    temperatureSensors.requestTemperatures();
 
     const char *const tempTopics[2] = {TOPIC_TEMP_BOX1, TOPIC_TEMP_BOX2};
     for (uint8_t i = 0; i < 2; ++i) {
@@ -561,13 +587,9 @@ void publishTelemetry() {
         continue;
       }
 
-      const float tempC = temperatureSensors.getTempC(tempSensorAddresses[i]);
-      if (tempC != DEVICE_DISCONNECTED_C) {
-        const float tempF = DallasTemperature::toFahrenheit(tempC);
-        logFormatted("DS18B20 #%u tempF=%.2f", i + 1, tempF);
-        publishFloat(tempTopics[i], tempF, 2);
+      if (tempSensorReadingValid[i]) {
+        publishFloat(tempTopics[i], latestTempSensorF[i], 2);
       } else {
-        logFormatted("DS18B20 #%u read failed", i + 1);
         clearRetained(tempTopics[i]);
       }
     }
@@ -655,18 +677,28 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
   }
 }
 
-void initializeSensors() {
-  lastLocalSensorInitAttemptMs = millis();
+void initializeIna219() {
+  lastIna219InitAttemptMs = millis();
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
   ina219Ready = ina219.begin();
   logFormatted("INA219 ready: %s", ina219Ready ? "yes" : "no");
+}
 
+void initializeTemperatureSensors() {
+  lastTemperatureInitAttemptMs = millis();
   temperatureSensors.begin();
-  temperatureSensors.setWaitForConversion(true);
+  temperatureSensors.setWaitForConversion(false);
   const uint8_t deviceCount = temperatureSensors.getDeviceCount();
   temperatureSensorCount = min<uint8_t>(deviceCount, 2);
   tempSensorPresent[0] = false;
   tempSensorPresent[1] = false;
+  tempSensorReadingValid[0] = false;
+  tempSensorReadingValid[1] = false;
+  latestTempSensorF[0] = NAN;
+  latestTempSensorF[1] = NAN;
+  tempConversionInProgress = false;
+  tempConversionRequestedMs = 0;
+  lastTemperatureSampleMs = 0;
   temperaturesReady = false;
   logFormatted("DS18B20 bus pin GPIO%u", PIN_ONEWIRE);
   logFormatted("DS18B20 count: %u", deviceCount);
@@ -687,21 +719,72 @@ void initializeSensors() {
   if (deviceCount < 2) {
     logLine("Expected 2 DS18B20 sensors on the shared 1-wire bus");
   }
+
+  processTemperatureSensors();
 }
 
 void ensureLocalSensorsInitialized() {
-  if (ina219Ready && temperaturesReady) {
+  const unsigned long now = millis();
+
+  if (!ina219Ready &&
+      (lastIna219InitAttemptMs == 0 ||
+       now - lastIna219InitAttemptMs >= kLocalSensorRetryIntervalMs)) {
+    logLine("Retrying INA219 initialization");
+    initializeIna219();
+  }
+
+  if (!temperaturesReady &&
+      (lastTemperatureInitAttemptMs == 0 ||
+       now - lastTemperatureInitAttemptMs >= kLocalSensorRetryIntervalMs)) {
+    logLine("Retrying DS18B20 initialization");
+    initializeTemperatureSensors();
+  }
+}
+
+void processTemperatureSensors() {
+  if (!temperaturesReady) {
+    tempConversionInProgress = false;
     return;
   }
 
   const unsigned long now = millis();
-  if (lastLocalSensorInitAttemptMs != 0 &&
-      now - lastLocalSensorInitAttemptMs < kLocalSensorRetryIntervalMs) {
+  if (tempConversionInProgress) {
+    if (now - tempConversionRequestedMs < kDs18b20ConversionMs) {
+      return;
+    }
+
+    for (uint8_t i = 0; i < 2; ++i) {
+      if (!tempSensorPresent[i]) {
+        tempSensorReadingValid[i] = false;
+        latestTempSensorF[i] = NAN;
+        continue;
+      }
+
+      const float tempC = temperatureSensors.getTempC(tempSensorAddresses[i]);
+      if (tempC != DEVICE_DISCONNECTED_C) {
+        latestTempSensorF[i] = DallasTemperature::toFahrenheit(tempC);
+        tempSensorReadingValid[i] = true;
+        logFormatted("DS18B20 #%u tempF=%.2f", i + 1, latestTempSensorF[i]);
+      } else {
+        tempSensorReadingValid[i] = false;
+        latestTempSensorF[i] = NAN;
+        logFormatted("DS18B20 #%u read failed", i + 1);
+      }
+    }
+
+    tempConversionInProgress = false;
+    lastTemperatureSampleMs = now;
     return;
   }
 
-  logLine("Retrying local sensor initialization");
-  initializeSensors();
+  if (lastTemperatureSampleMs != 0 && now - lastTemperatureSampleMs < kTemperatureSampleIntervalMs) {
+    return;
+  }
+
+  if (temperatureSensors.requestTemperatures().result) {
+    tempConversionInProgress = true;
+    tempConversionRequestedMs = now;
+  }
 }
 }  // namespace
 
@@ -717,9 +800,10 @@ void setup() {
   WiFi.mode(WIFI_STA);
   mqttClient.setServer(MQTT_HOST, MQTT_PORT);
   mqttClient.setBufferSize(kMqttBufferSize);
-  mqttClient.setSocketTimeout((MQTT_CONNECT_TIMEOUT_MS + 999) / 1000);
+  mqttClient.setSocketTimeout(kMqttSocketTimeoutSeconds);
   mqttClient.setCallback(mqttCallback);
-  initializeSensors();
+  initializeIna219();
+  initializeTemperatureSensors();
   victronMonitor.begin();
 
   publishStatus("booting");
@@ -733,9 +817,11 @@ void loop() {
   processRouterRestart();
   ensureMqttConnected();
   mqttClient.loop();
+  processTemperatureSensors();
   victronMonitor.poll();
   publishVictronTelemetry(false);
   ensureLocalSensorsInitialized();
+  ensureVictronTelemetryCleared();
 
   const unsigned long now = millis();
   if (now - lastPublishMs >= SENSOR_PUBLISH_INTERVAL_MS) {
