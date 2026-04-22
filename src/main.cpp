@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <math.h>
+#include <stdarg.h>
 #include <WiFi.h>
 #include <Wire.h>
 
@@ -23,35 +24,68 @@ OneWire oneWire(PIN_ONEWIRE);
 DallasTemperature temperatureSensors(&oneWire);
 Adafruit_INA219 ina219;
 DeviceAddress tempSensorAddresses[2];
+bool tempSensorPresent[2] = {false, false};
 VictronMonitor victronMonitor;
 
 unsigned long lastPublishMs = 0;
 unsigned long lastWifiAttemptMs = 0;
 unsigned long lastMqttAttemptMs = 0;
+unsigned long lastLocalSensorInitAttemptMs = 0;
 bool ina219Ready = false;
 bool temperaturesReady = false;
 uint8_t temperatureSensorCount = 0;
 bool victronLinkStatePublished = false;
 bool victronLinkOnline = false;
+bool wifiConnectInProgress = false;
+unsigned long wifiConnectStartedMs = 0;
+bool routerRestartInProgress = false;
+unsigned long routerRestartResumeMs = 0;
 constexpr char kTopicAvailability[] = "littlelodge/routerbox/availability";
 constexpr char kTopicRelayPinLevel[] = "littlelodge/routerbox/router_relay/pin_level";
 constexpr char kTopicTempSensorCount[] = "littlelodge/routerbox/temp/debug/count";
 constexpr char kTopicTempSensorState[] = "littlelodge/routerbox/temp/debug/state";
+constexpr char kTopicIna219State[] = "littlelodge/routerbox/router/debug/ina219_state";
 constexpr char kDiscoveryNodeId[] = "router_box";
 constexpr char kVictronDiscoveryNodePrefix[] = "router_box_";
+constexpr char kUnitFahrenheit[] = "\xC2\xB0"
+                                   "F";
 constexpr uint16_t kMqttBufferSize = 1024;
 constexpr float kIna219CurrentDeadbandAmps = 0.01f;
 constexpr float kIna219PowerDeadbandWatts = 0.05f;
+constexpr uint32_t kLocalSensorRetryIntervalMs = 10000;
 
 void logLine(const String &message) {
   Serial.println("[router-box] " + message);
 }
 
+void logFormatted(const char *format, ...) {
+  char buffer[160];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(buffer, sizeof(buffer), format, args);
+  va_end(args);
+  Serial.print("[router-box] ");
+  Serial.println(buffer);
+}
+
+bool publishRetained(const char *topic, const char *payload);
 bool publishRetained(const char *topic, const String &payload);
+bool publishLogged(const char *topic, const char *payload);
 bool publishLogged(const char *topic, const String &payload);
+bool clearRetained(const char *topic);
+bool publishFloat(const char *topic, float value, uint8_t decimals);
+bool publishInt(const char *topic, int value);
 void publishHomeAssistantDiscovery();
 void publishVictronTelemetry(bool forcePublish);
 bool ensureMqttConnected();
+void initializeSensors();
+void ensureLocalSensorsInitialized();
+void processRouterRestart();
+
+void cancelRouterRestart() {
+  routerRestartInProgress = false;
+  routerRestartResumeMs = 0;
+}
 
 const char *routerPowerStateString() {
   return desiredRouterPowered ? "ON" : "OFF";
@@ -77,9 +111,9 @@ void setRouterPowerState(bool routerPowered) {
   desiredRouterPowered = routerPowered;
   const bool pinLevel = coilLevelFor(relayCoilShouldBeEnergized(routerPowered));
   digitalWrite(PIN_RELAY, pinLevel);
-  logLine(String("Router power state set to ") + routerPowerStateString() +
-          ", GPIO level=" + (pinLevel ? "HIGH" : "LOW") +
-          ", digitalRead=" + (digitalRead(PIN_RELAY) ? "HIGH" : "LOW"));
+  logFormatted("Router power state set to %s, GPIO level=%s, digitalRead=%s",
+               routerPowerStateString(), pinLevel ? "HIGH" : "LOW",
+               digitalRead(PIN_RELAY) ? "HIGH" : "LOW");
 
   if (mqttClient.connected()) {
     publishRetained(kTopicRelayPinLevel, pinLevel ? "HIGH" : "LOW");
@@ -90,11 +124,37 @@ bool publishRetained(const char *topic, const String &payload) {
   return mqttClient.publish(topic, payload.c_str(), true);
 }
 
-bool publishLogged(const char *topic, const String &payload) {
+bool publishRetained(const char *topic, const char *payload) {
+  return mqttClient.publish(topic, payload, true);
+}
+
+bool publishLogged(const char *topic, const char *payload) {
   const bool success = publishRetained(topic, payload);
-  logLine(String("MQTT publish ") + (success ? "ok" : "failed") +
-          " topic=" + topic + " payload=" + payload);
+  logFormatted("MQTT publish %s topic=%s payload=%s", success ? "ok" : "failed", topic,
+               payload);
   return success;
+}
+
+bool publishLogged(const char *topic, const String &payload) {
+  return publishLogged(topic, payload.c_str());
+}
+
+bool clearRetained(const char *topic) {
+  const bool success = mqttClient.publish(topic, "", true);
+  logFormatted("MQTT clear %s topic=%s", success ? "ok" : "failed", topic);
+  return success;
+}
+
+bool publishFloat(const char *topic, float value, uint8_t decimals) {
+  char payload[24];
+  dtostrf(value, 0, decimals, payload);
+  return publishLogged(topic, payload);
+}
+
+bool publishInt(const char *topic, int value) {
+  char payload[16];
+  snprintf(payload, sizeof(payload), "%d", value);
+  return publishLogged(topic, payload);
 }
 
 String discoveryDeviceJson() {
@@ -152,41 +212,41 @@ void publishHomeAssistantDiscovery() {
       "sensor",
       "temp_box1",
       String("{\"name\":\"Box 1 Temperature\",\"uniq_id\":\"router_box_temp_box1\",") +
-          "\"stat_t\":\"" + TOPIC_TEMP_BOX1 +
-          "\",\"dev_cla\":\"temperature\",\"unit_of_meas\":\"°F\",\"stat_cla\":\"measurement\","
-          + availability + ",\"dev\":" + device + "}");
+          "\"stat_t\":\"" + TOPIC_TEMP_BOX1 + "\",\"dev_cla\":\"temperature\"," +
+          "\"unit_of_meas\":\"" + kUnitFahrenheit + "\",\"stat_cla\":\"measurement\"," +
+          availability + ",\"dev\":" + device + "}");
 
   publishDiscoveryConfig(
       "sensor",
       "temp_box2",
       String("{\"name\":\"Box 2 Temperature\",\"uniq_id\":\"router_box_temp_box2\",") +
-          "\"stat_t\":\"" + TOPIC_TEMP_BOX2 +
-          "\",\"dev_cla\":\"temperature\",\"unit_of_meas\":\"°F\",\"stat_cla\":\"measurement\","
-          + availability + ",\"dev\":" + device + "}");
+          "\"stat_t\":\"" + TOPIC_TEMP_BOX2 + "\",\"dev_cla\":\"temperature\"," +
+          "\"unit_of_meas\":\"" + kUnitFahrenheit + "\",\"stat_cla\":\"measurement\"," +
+          availability + ",\"dev\":" + device + "}");
 
   publishDiscoveryConfig(
       "sensor",
       "router_voltage",
       String("{\"name\":\"Router Voltage\",\"uniq_id\":\"router_box_router_voltage\",") +
           "\"stat_t\":\"" + TOPIC_ROUTER_VOLTS +
-          "\",\"dev_cla\":\"voltage\",\"unit_of_meas\":\"V\",\"stat_cla\":\"measurement\","
-          + availability + ",\"dev\":" + device + "}");
+          "\",\"dev_cla\":\"voltage\",\"unit_of_meas\":\"V\",\"stat_cla\":\"measurement\"," +
+          availability + ",\"dev\":" + device + "}");
 
   publishDiscoveryConfig(
       "sensor",
       "router_current",
       String("{\"name\":\"Router Current\",\"uniq_id\":\"router_box_router_current\",") +
           "\"stat_t\":\"" + TOPIC_ROUTER_AMPS +
-          "\",\"dev_cla\":\"current\",\"unit_of_meas\":\"A\",\"stat_cla\":\"measurement\","
-          + availability + ",\"dev\":" + device + "}");
+          "\",\"dev_cla\":\"current\",\"unit_of_meas\":\"A\",\"stat_cla\":\"measurement\"," +
+          availability + ",\"dev\":" + device + "}");
 
   publishDiscoveryConfig(
       "sensor",
       "router_power",
       String("{\"name\":\"Router Power Draw\",\"uniq_id\":\"router_box_router_power_draw\",") +
           "\"stat_t\":\"" + TOPIC_ROUTER_WATTS +
-          "\",\"dev_cla\":\"power\",\"unit_of_meas\":\"W\",\"stat_cla\":\"measurement\","
-          + availability + ",\"dev\":" + device + "}");
+          "\",\"dev_cla\":\"power\",\"unit_of_meas\":\"W\",\"stat_cla\":\"measurement\"," +
+          availability + ",\"dev\":" + device + "}");
 
   if (VICTRON_ENABLED) {
     publishVictronDiscoveryConfig(
@@ -299,6 +359,18 @@ void publishVictronLinkState(bool online) {
   publishRetained(TOPIC_VICTRON_LINK_STATE, online ? "online" : "stale");
 }
 
+void clearVictronTelemetryTopics() {
+  clearRetained(TOPIC_VICTRON_BATTERY_VOLTS);
+  clearRetained(TOPIC_VICTRON_CHARGE_AMPS);
+  clearRetained(TOPIC_VICTRON_SOLAR_WATTS);
+  clearRetained(TOPIC_VICTRON_YIELD_TODAY_WH);
+  clearRetained(TOPIC_VICTRON_LOAD_AMPS);
+  clearRetained(TOPIC_VICTRON_CHARGE_STATE);
+  clearRetained(TOPIC_VICTRON_CHARGE_STATE_CODE);
+  clearRetained(TOPIC_VICTRON_ERROR_CODE);
+  clearRetained(TOPIC_VICTRON_RSSI);
+}
+
 void publishVictronTelemetry(bool forcePublish) {
   if (!VICTRON_ENABLED || !ensureMqttConnected()) {
     return;
@@ -309,6 +381,7 @@ void publishVictronTelemetry(bool forcePublish) {
   if (stale) {
     if (!victronLinkStatePublished || victronLinkOnline) {
       publishVictronLinkState(false);
+      clearVictronTelemetryTopics();
     }
     return;
   }
@@ -323,70 +396,104 @@ void publishVictronTelemetry(bool forcePublish) {
 
   const VictronTelemetry &telemetry = victronMonitor.telemetry();
   if (!isnan(telemetry.batteryVoltage)) {
-    publishRetained(TOPIC_VICTRON_BATTERY_VOLTS, String(telemetry.batteryVoltage, 2));
+    publishFloat(TOPIC_VICTRON_BATTERY_VOLTS, telemetry.batteryVoltage, 2);
+  } else {
+    clearRetained(TOPIC_VICTRON_BATTERY_VOLTS);
   }
   if (!isnan(telemetry.chargeCurrent)) {
-    publishRetained(TOPIC_VICTRON_CHARGE_AMPS, String(telemetry.chargeCurrent, 1));
+    publishFloat(TOPIC_VICTRON_CHARGE_AMPS, telemetry.chargeCurrent, 1);
+  } else {
+    clearRetained(TOPIC_VICTRON_CHARGE_AMPS);
   }
   if (!isnan(telemetry.solarPower)) {
-    publishRetained(TOPIC_VICTRON_SOLAR_WATTS, String(telemetry.solarPower, 0));
+    publishFloat(TOPIC_VICTRON_SOLAR_WATTS, telemetry.solarPower, 0);
+  } else {
+    clearRetained(TOPIC_VICTRON_SOLAR_WATTS);
   }
   if (!isnan(telemetry.yieldTodayWh)) {
-    publishRetained(TOPIC_VICTRON_YIELD_TODAY_WH, String(telemetry.yieldTodayWh, 0));
+    publishFloat(TOPIC_VICTRON_YIELD_TODAY_WH, telemetry.yieldTodayWh, 0);
+  } else {
+    clearRetained(TOPIC_VICTRON_YIELD_TODAY_WH);
   }
   if (!isnan(telemetry.loadCurrent)) {
-    publishRetained(TOPIC_VICTRON_LOAD_AMPS, String(telemetry.loadCurrent, 1));
+    publishFloat(TOPIC_VICTRON_LOAD_AMPS, telemetry.loadCurrent, 1);
+  } else {
+    clearRetained(TOPIC_VICTRON_LOAD_AMPS);
   }
 
   publishRetained(TOPIC_VICTRON_CHARGE_STATE,
                   VictronMonitor::chargeStateName(telemetry.chargeStateCode));
-  publishRetained(TOPIC_VICTRON_CHARGE_STATE_CODE, String(telemetry.chargeStateCode));
-  publishRetained(TOPIC_VICTRON_ERROR_CODE, String(telemetry.chargerErrorCode));
-  publishRetained(TOPIC_VICTRON_RSSI, String(telemetry.rssi));
+  publishInt(TOPIC_VICTRON_CHARGE_STATE_CODE, telemetry.chargeStateCode);
+  publishInt(TOPIC_VICTRON_ERROR_CODE, telemetry.chargerErrorCode);
+  publishInt(TOPIC_VICTRON_RSSI, telemetry.rssi);
   victronMonitor.markPublished();
 }
 
 void restartRouter() {
+  if (routerRestartInProgress) {
+    logLine("Restart already in progress");
+    return;
+  }
+
   logLine("Restart command received, cycling router power");
   setRouterPowerState(false);
   publishRelayState();
   publishStatus("router_restarting");
-  delay(RESTART_OFF_MS);
+  routerRestartInProgress = true;
+  routerRestartResumeMs = millis() + RESTART_OFF_MS;
+}
+
+void processRouterRestart() {
+  if (!routerRestartInProgress) {
+    return;
+  }
+
+  if (static_cast<long>(millis() - routerRestartResumeMs) < 0) {
+    return;
+  }
+
+  logLine("Restart delay elapsed, restoring router power");
+  cancelRouterRestart();
   setRouterPowerState(true);
   publishRelayState();
   publishStatus("router_running");
 }
 
 bool ensureWifiConnected() {
-  if (WiFi.status() == WL_CONNECTED) {
+  const wl_status_t status = WiFi.status();
+  if (status == WL_CONNECTED) {
+    if (wifiConnectInProgress) {
+      wifiConnectInProgress = false;
+      logFormatted("Wi-Fi connected, IP: %s", WiFi.localIP().toString().c_str());
+      logFormatted("Subnet mask: %s", WiFi.subnetMask().toString().c_str());
+      logFormatted("Gateway: %s", WiFi.gatewayIP().toString().c_str());
+      logFormatted("RSSI: %d", WiFi.RSSI());
+    }
     return true;
   }
 
   const unsigned long now = millis();
+  if (wifiConnectInProgress) {
+    if (now - wifiConnectStartedMs < WIFI_CONNECT_TIMEOUT_MS) {
+      return false;
+    }
+
+    logFormatted("Wi-Fi connection timed out, status=%d", static_cast<int>(status));
+    WiFi.disconnect();
+    wifiConnectInProgress = false;
+  }
+
   if (now - lastWifiAttemptMs < MQTT_RECONNECT_INTERVAL_MS) {
     return false;
   }
 
   lastWifiAttemptMs = now;
-  logLine(String("Connecting to Wi-Fi SSID: ") + WIFI_SSID);
+  logFormatted("Connecting to Wi-Fi SSID: %s", WIFI_SSID);
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  const unsigned long startedAt = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - startedAt < WIFI_CONNECT_TIMEOUT_MS) {
-    delay(250);
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    logLine(String("Wi-Fi connected, IP: ") + WiFi.localIP().toString());
-    logLine(String("Subnet mask: ") + WiFi.subnetMask().toString());
-    logLine(String("Gateway: ") + WiFi.gatewayIP().toString());
-    logLine(String("RSSI: ") + WiFi.RSSI());
-  } else {
-    logLine(String("Wi-Fi connection failed, status=") + WiFi.status());
-  }
-
-  return WiFi.status() == WL_CONNECTED;
+  wifiConnectInProgress = true;
+  wifiConnectStartedMs = now;
+  return false;
 }
 
 bool ensureMqttConnected() {
@@ -404,24 +511,7 @@ bool ensureMqttConnected() {
   }
 
   lastMqttAttemptMs = now;
-  logLine(String("Connecting to MQTT broker ") + MQTT_HOST + ":" + MQTT_PORT);
-  mqttClient.setServer(MQTT_HOST, MQTT_PORT);
-
-  WiFiClient probeClient;
-  if (probeClient.connect(MQTT_HOST, MQTT_PORT)) {
-    logLine("TCP connect to broker succeeded");
-    probeClient.stop();
-  } else {
-    logLine("TCP connect to broker failed");
-  }
-
-  WiFiClient homeAssistantProbe;
-  if (homeAssistantProbe.connect(MQTT_HOST, 8123)) {
-    logLine("TCP connect to Home Assistant port 8123 succeeded");
-    homeAssistantProbe.stop();
-  } else {
-    logLine("TCP connect to Home Assistant port 8123 failed");
-  }
+  logFormatted("Connecting to MQTT broker %s:%u", MQTT_HOST, MQTT_PORT);
 
   const bool connected = mqttClient.connect(
       MQTT_CLIENT_ID,
@@ -433,12 +523,17 @@ bool ensureMqttConnected() {
       "offline");
 
   if (!connected) {
-    logLine(String("MQTT connection failed, state=") + mqttClient.state());
+    logFormatted("MQTT connection failed, state=%d", mqttClient.state());
     return false;
   }
 
-  mqttClient.subscribe(TOPIC_RELAY_SET);
-  logLine(String("MQTT connected and subscribed to ") + TOPIC_RELAY_SET);
+  if (!mqttClient.subscribe(TOPIC_RELAY_SET)) {
+    logFormatted("MQTT subscribe failed for %s", TOPIC_RELAY_SET);
+    mqttClient.disconnect();
+    return false;
+  }
+
+  logFormatted("MQTT connected and subscribed to %s", TOPIC_RELAY_SET);
   publishAvailability("online");
   publishHomeAssistantDiscovery();
   publishRelayState();
@@ -451,36 +546,36 @@ void publishTelemetry() {
     return;
   }
 
-  publishLogged(kTopicTempSensorCount, String(temperatureSensorCount));
+  ensureLocalSensorsInitialized();
+
+  publishInt(kTopicTempSensorCount, temperatureSensorCount);
 
   if (temperaturesReady) {
     publishLogged(kTopicTempSensorState, "ready");
     temperatureSensors.requestTemperatures();
 
-    const float temp0C = temperatureSensorCount >= 1
-                             ? temperatureSensors.getTempC(tempSensorAddresses[0])
-                             : DEVICE_DISCONNECTED_C;
-    const float temp1C = temperatureSensorCount >= 2
-                             ? temperatureSensors.getTempC(tempSensorAddresses[1])
-                             : DEVICE_DISCONNECTED_C;
+    const char *const tempTopics[2] = {TOPIC_TEMP_BOX1, TOPIC_TEMP_BOX2};
+    for (uint8_t i = 0; i < 2; ++i) {
+      if (!tempSensorPresent[i]) {
+        clearRetained(tempTopics[i]);
+        continue;
+      }
 
-    if (temp0C != DEVICE_DISCONNECTED_C) {
-      const String payload = String(DallasTemperature::toFahrenheit(temp0C), 2);
-      logLine(String("DS18B20 #1 tempF=") + payload);
-      publishLogged(TOPIC_TEMP_BOX1, payload);
-    } else if (temperatureSensorCount >= 1) {
-      logLine("DS18B20 #1 read failed");
-    }
-    if (temp1C != DEVICE_DISCONNECTED_C) {
-      const String payload = String(DallasTemperature::toFahrenheit(temp1C), 2);
-      logLine(String("DS18B20 #2 tempF=") + payload);
-      publishLogged(TOPIC_TEMP_BOX2, payload);
-    } else if (temperatureSensorCount >= 2) {
-      logLine("DS18B20 #2 read failed");
+      const float tempC = temperatureSensors.getTempC(tempSensorAddresses[i]);
+      if (tempC != DEVICE_DISCONNECTED_C) {
+        const float tempF = DallasTemperature::toFahrenheit(tempC);
+        logFormatted("DS18B20 #%u tempF=%.2f", i + 1, tempF);
+        publishFloat(tempTopics[i], tempF, 2);
+      } else {
+        logFormatted("DS18B20 #%u read failed", i + 1);
+        clearRetained(tempTopics[i]);
+      }
     }
   } else {
     logLine("Skipping DS18B20 publish because no sensors were initialized");
     publishLogged(kTopicTempSensorState, "not_ready");
+    clearRetained(TOPIC_TEMP_BOX1);
+    clearRetained(TOPIC_TEMP_BOX2);
   }
 
   if (ina219Ready) {
@@ -498,9 +593,15 @@ void publishTelemetry() {
       watts = 0.0f;
     }
 
-    publishRetained(TOPIC_ROUTER_VOLTS, String(loadVoltage, 3));
-    publishRetained(TOPIC_ROUTER_AMPS, String(currentAmps, 3));
-    publishRetained(TOPIC_ROUTER_WATTS, String(watts, 3));
+    logFormatted("INA219 loadV=%.3f currentA=%.3f watts=%.3f", loadVoltage, currentAmps,
+                 watts);
+    publishLogged(kTopicIna219State, "ready");
+    publishFloat(TOPIC_ROUTER_VOLTS, loadVoltage, 3);
+    publishFloat(TOPIC_ROUTER_AMPS, currentAmps, 3);
+    publishFloat(TOPIC_ROUTER_WATTS, watts, 3);
+  } else {
+    logLine("Skipping INA219 publish because sensor was not initialized");
+    publishLogged(kTopicIna219State, "not_ready");
   }
 
   publishVictronTelemetry(true);
@@ -514,6 +615,7 @@ void handleRelayCommand(const String &commandRaw) {
   logLine(String("MQTT command received: ") + command);
 
   if (command == "ON") {
+    cancelRouterRestart();
     setRouterPowerState(true);
     publishRelayState();
     publishStatus("router_running");
@@ -521,6 +623,7 @@ void handleRelayCommand(const String &commandRaw) {
   }
 
   if (command == "OFF") {
+    cancelRouterRestart();
     setRouterPowerState(false);
     publishRelayState();
     publishStatus("router_off");
@@ -528,6 +631,7 @@ void handleRelayCommand(const String &commandRaw) {
   }
 
   if (command == "TOGGLE") {
+    cancelRouterRestart();
     setRouterPowerState(!desiredRouterPowered);
     publishRelayState();
     publishStatus(desiredRouterPowered ? "router_running" : "router_off");
@@ -552,34 +656,52 @@ void mqttCallback(char *topic, byte *payload, unsigned int length) {
 }
 
 void initializeSensors() {
+  lastLocalSensorInitAttemptMs = millis();
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
   ina219Ready = ina219.begin();
-  logLine(String("INA219 ready: ") + (ina219Ready ? "yes" : "no"));
+  logFormatted("INA219 ready: %s", ina219Ready ? "yes" : "no");
 
   temperatureSensors.begin();
   temperatureSensors.setWaitForConversion(true);
   const uint8_t deviceCount = temperatureSensors.getDeviceCount();
   temperatureSensorCount = min<uint8_t>(deviceCount, 2);
-  temperaturesReady = temperatureSensorCount > 0;
-  logLine(String("DS18B20 bus pin GPIO") + PIN_ONEWIRE);
-  logLine(String("DS18B20 count: ") + deviceCount);
+  tempSensorPresent[0] = false;
+  tempSensorPresent[1] = false;
+  temperaturesReady = false;
+  logFormatted("DS18B20 bus pin GPIO%u", PIN_ONEWIRE);
+  logFormatted("DS18B20 count: %u", deviceCount);
 
   for (uint8_t i = 0; i < temperatureSensorCount; ++i) {
     if (!temperatureSensors.getAddress(tempSensorAddresses[i], i)) {
-      logLine(String("Failed to read DS18B20 address at slot ") + i);
-      temperaturesReady = false;
-      temperatureSensorCount = i;
-      break;
+      logFormatted("Failed to read DS18B20 address at slot %u", i);
+      continue;
     }
 
+    tempSensorPresent[i] = true;
+    temperaturesReady = true;
     temperatureSensors.setResolution(tempSensorAddresses[i], 12);
-    logLine(String("DS18B20 #") + (i + 1) + " address: " +
-            formatDeviceAddress(tempSensorAddresses[i]));
+    logFormatted("DS18B20 #%u address: %s", i + 1,
+                 formatDeviceAddress(tempSensorAddresses[i]).c_str());
   }
 
   if (deviceCount < 2) {
     logLine("Expected 2 DS18B20 sensors on the shared 1-wire bus");
   }
+}
+
+void ensureLocalSensorsInitialized() {
+  if (ina219Ready && temperaturesReady) {
+    return;
+  }
+
+  const unsigned long now = millis();
+  if (lastLocalSensorInitAttemptMs != 0 &&
+      now - lastLocalSensorInitAttemptMs < kLocalSensorRetryIntervalMs) {
+    return;
+  }
+
+  logLine("Retrying local sensor initialization");
+  initializeSensors();
 }
 }  // namespace
 
@@ -587,12 +709,15 @@ void setup() {
   ++bootCount;
   Serial.begin(115200);
   delay(250);
-  logLine(String("Boot count: ") + bootCount);
+  logFormatted("Boot count: %lu", static_cast<unsigned long>(bootCount));
 
   pinMode(PIN_RELAY, OUTPUT);
   setRouterPowerState(desiredRouterPowered);
 
+  WiFi.mode(WIFI_STA);
+  mqttClient.setServer(MQTT_HOST, MQTT_PORT);
   mqttClient.setBufferSize(kMqttBufferSize);
+  mqttClient.setSocketTimeout((MQTT_CONNECT_TIMEOUT_MS + 999) / 1000);
   mqttClient.setCallback(mqttCallback);
   initializeSensors();
   victronMonitor.begin();
@@ -605,10 +730,12 @@ void setup() {
 }
 
 void loop() {
+  processRouterRestart();
   ensureMqttConnected();
   mqttClient.loop();
   victronMonitor.poll();
   publishVictronTelemetry(false);
+  ensureLocalSensorsInitialized();
 
   const unsigned long now = millis();
   if (now - lastPublishMs >= SENSOR_PUBLISH_INTERVAL_MS) {
