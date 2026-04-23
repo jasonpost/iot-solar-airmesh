@@ -16,7 +16,9 @@ namespace {
 using namespace RouterBoxConfig;
 
 RTC_DATA_ATTR bool desiredRouterPowered = ROUTER_DEFAULT_POWERED;
+RTC_DATA_ATTR bool actualRouterPowered = ROUTER_DEFAULT_POWERED;
 RTC_DATA_ATTR uint32_t bootCount = 0;
+RTC_DATA_ATTR bool routerRestartInProgress = false;
 
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
@@ -41,12 +43,13 @@ bool tempConversionInProgress = false;
 unsigned long tempConversionRequestedMs = 0;
 unsigned long lastTemperatureSampleMs = 0;
 unsigned long lastTemperatureReadSuccessMs = 0;
+unsigned long lastTemperatureFailureStartedMs = 0;
 unsigned long lastIna219ReadSuccessMs = 0;
 bool victronLinkStatePublished = false;
 bool victronLinkOnline = false;
+bool victronRepublishRequested = false;
 bool wifiConnectInProgress = false;
 unsigned long wifiConnectStartedMs = 0;
-bool routerRestartInProgress = false;
 unsigned long routerRestartResumeMs = 0;
 bool victronTelemetryClearPending = false;
 constexpr char kTopicAvailability[] = "littlelodge/routerbox/availability";
@@ -109,6 +112,10 @@ void cancelRouterRestart() {
 }
 
 const char *routerPowerStateString() {
+  return actualRouterPowered ? "ON" : "OFF";
+}
+
+const char *desiredRouterPowerStateString() {
   return desiredRouterPowered ? "ON" : "OFF";
 }
 
@@ -128,17 +135,23 @@ bool relayCoilShouldBeEnergized(bool routerPowered) {
   return RELAY_USE_NC_CONTACT ? !routerPowered : routerPowered;
 }
 
-void setRouterPowerState(bool routerPowered) {
-  desiredRouterPowered = routerPowered;
+void driveRouterPowerOutput(bool routerPowered) {
+  actualRouterPowered = routerPowered;
   const bool pinLevel = coilLevelFor(relayCoilShouldBeEnergized(routerPowered));
   digitalWrite(PIN_RELAY, pinLevel);
-  logFormatted("Router power state set to %s, GPIO level=%s, digitalRead=%s",
-               routerPowerStateString(), pinLevel ? "HIGH" : "LOW",
+  logFormatted("Router power output set to %s (desired=%s), GPIO level=%s, digitalRead=%s",
+               routerPowerStateString(), desiredRouterPowerStateString(),
+               pinLevel ? "HIGH" : "LOW",
                digitalRead(PIN_RELAY) ? "HIGH" : "LOW");
 
   if (mqttClient.connected()) {
     publishRetained(kTopicRelayPinLevel, pinLevel ? "HIGH" : "LOW");
   }
+}
+
+void setRouterPowerState(bool routerPowered) {
+  desiredRouterPowered = routerPowered;
+  driveRouterPowerOutput(routerPowered);
 }
 
 bool publishRetained(const char *topic, const String &payload) {
@@ -435,11 +448,12 @@ void publishVictronTelemetry(bool forcePublish) {
       publishVictronLinkState(false);
       clearVictronTelemetryTopics();
     }
+    victronRepublishRequested = false;
     ensureVictronTelemetryCleared();
     return;
   }
 
-  if (!forcePublish && !victronMonitor.hasPendingPublish()) {
+  if (!forcePublish && !victronRepublishRequested && !victronMonitor.hasPendingPublish()) {
     return;
   }
 
@@ -447,6 +461,7 @@ void publishVictronTelemetry(bool forcePublish) {
     publishVictronLinkState(true);
   }
   victronTelemetryClearPending = false;
+  victronRepublishRequested = false;
 
   const VictronTelemetry &telemetry = victronMonitor.telemetry();
   if (!isnan(telemetry.batteryVoltage)) {
@@ -490,7 +505,8 @@ void restartRouter() {
   }
 
   logLine("Restart command received, cycling router power");
-  setRouterPowerState(false);
+  desiredRouterPowered = true;
+  driveRouterPowerOutput(false);
   publishRelayState();
   publishStatus("router_restarting");
   routerRestartInProgress = true;
@@ -508,7 +524,7 @@ void processRouterRestart() {
 
   logLine("Restart delay elapsed, restoring router power");
   cancelRouterRestart();
-  setRouterPowerState(true);
+  driveRouterPowerOutput(true);
   publishRelayState();
   publishStatus("router_running");
 }
@@ -588,10 +604,15 @@ bool ensureMqttConnected() {
   }
 
   logFormatted("MQTT connected and subscribed to %s", TOPIC_RELAY_SET);
+  victronLinkStatePublished = false;
+  victronLinkOnline = false;
+  victronRepublishRequested = VICTRON_ENABLED;
   publishAvailability("online");
   publishHomeAssistantDiscovery();
   publishRelayState();
-  publishStatus(desiredRouterPowered ? "router_running" : "router_off");
+  publishStatus(routerRestartInProgress ? "router_restarting"
+                                        : (actualRouterPowered ? "router_running"
+                                                               : "router_off"));
   return true;
 }
 
@@ -744,6 +765,7 @@ void initializeTemperatureSensors() {
   tempConversionRequestedMs = 0;
   lastTemperatureSampleMs = 0;
   lastTemperatureReadSuccessMs = 0;
+  lastTemperatureFailureStartedMs = 0;
   temperaturesReady = false;
   logFormatted("DS18B20 bus pin GPIO%u", PIN_ONEWIRE);
   logFormatted("DS18B20 count: %u", deviceCount);
@@ -798,6 +820,24 @@ void ensureLocalSensorsInitialized() {
       now - lastTemperatureInitAttemptMs >= kLocalSensorRetryIntervalMs) {
     logLine("Retrying DS18B20 initialization after repeated read failures");
     initializeTemperatureSensors();
+    return;
+  }
+
+  if (temperaturesReady) {
+    if (hasAnyValidTemperatureReading()) {
+      lastTemperatureFailureStartedMs = 0;
+    } else if (lastTemperatureSampleMs != 0) {
+      if (lastTemperatureFailureStartedMs == 0) {
+        lastTemperatureFailureStartedMs = lastTemperatureSampleMs;
+      }
+
+      if (!tempConversionInProgress &&
+          now - lastTemperatureFailureStartedMs >= kTemperatureReadFailureReinitMs &&
+          now - lastTemperatureInitAttemptMs >= kLocalSensorRetryIntervalMs) {
+        logLine("Retrying DS18B20 initialization after sustained invalid readings");
+        initializeTemperatureSensors();
+      }
+    }
   }
 }
 
@@ -838,6 +878,9 @@ void processTemperatureSensors() {
     lastTemperatureSampleMs = now;
     if (anyReadSucceeded) {
       lastTemperatureReadSuccessMs = now;
+      lastTemperatureFailureStartedMs = 0;
+    } else if (lastTemperatureFailureStartedMs == 0) {
+      lastTemperatureFailureStartedMs = now;
     }
     return;
   }
@@ -860,7 +903,12 @@ void setup() {
   logFormatted("Boot count: %lu", static_cast<unsigned long>(bootCount));
 
   pinMode(PIN_RELAY, OUTPUT);
-  setRouterPowerState(desiredRouterPowered);
+  if (routerRestartInProgress) {
+    logLine("Boot detected during router restart; restoring power and clearing transient state");
+    cancelRouterRestart();
+    desiredRouterPowered = true;
+  }
+  driveRouterPowerOutput(desiredRouterPowered);
 
   WiFi.mode(WIFI_STA);
   mqttClient.setServer(MQTT_HOST, MQTT_PORT);

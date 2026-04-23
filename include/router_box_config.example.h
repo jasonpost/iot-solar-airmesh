@@ -3,8 +3,8 @@
 // Reference-only template. The firmware builds against router_box_config.h.
 
 namespace RouterBoxConfig {
-constexpr char WIFI_SSID[] = "littlelodgeiot";
-constexpr char WIFI_PASSWORD[] = "R3g@lLLIOT43037!";
+constexpr char WIFI_SSID[] = "replace-with-your-ssid";
+constexpr char WIFI_PASSWORD[] = "replace-with-your-password";
 
 constexpr char MQTT_HOST[] = "192.168.1.10";
 constexpr uint16_t MQTT_PORT = 1883;
