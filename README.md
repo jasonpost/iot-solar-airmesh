@@ -5,11 +5,15 @@ Firmware for a `Seeed XIAO ESP32C3` that monitors and power-cycles a field route
 ## What it does
 
 - Switches router power through a relay
-- Publishes router voltage, current, and watts from an `INA219`
+- Publishes router voltage, current, watts, and accumulated watt-hours from an `INA219`
 - Publishes two `DS18B20` temperature sensors on a shared 1-wire bus
 - Accepts MQTT commands for `ON`, `OFF`, `TOGGLE`, and `RESTART`
 - Publishes Home Assistant MQTT discovery for switch, button, and sensor entities
+- Publishes retained availability, relay state, and runtime status topics for automation
+- Retries Wi-Fi, MQTT, INA219, and DS18B20 initialization automatically after failures
+- Clears stale retained telemetry when local sensors or Victron data go invalid
 - Optionally reads Victron BLE telemetry when `VICTRON_ENABLED` is set
+- Optionally estimates battery percent from Victron battery voltage when `BATTERY_SOC_ENABLED` is set
 
 ## Hardware
 
@@ -54,12 +58,22 @@ Use `include/router_box_config.example.h` as the reference for required values:
 - MQTT topic names
 - Pin assignments and timing constants
 - Relay polarity and default power state
+- Upload/monitor serial port should match your PlatformIO environment
 - Optional Victron BLE settings:
   - `VICTRON_ENABLED`
   - `VICTRON_KEY`
   - `VICTRON_MAC_ADDRESS`
   - `VICTRON_DEVICE_ID`
   - `VICTRON_DEVICE_NAME`
+- Optional battery state-of-charge estimation settings:
+  - `BATTERY_SOC_ENABLED`
+  - `BATTERY_CAPACITY_AH`
+  - `BATTERY_SERIES_CELLS`
+  - `BATTERY_SOC_SMOOTHING_ALPHA`
+  - `BATTERY_SOC_VOLTAGE_DEADBAND`
+  - `BATTERY_SOC_USE_CURRENT_ASSIST`
+  - `BATTERY_SOC_CURRENT_ASSIST_VOLTS_PER_AMP`
+  - `BATTERY_SOC_CURRENT_DEADBAND_AMPS`
 
 If you want a non-committed scratch template, start from `include/router_box_config.local.example.h` and copy the values you need into `include/router_box_config.h`.
 
@@ -77,6 +91,8 @@ The current `platformio.ini` uses:
 
 - board: `seeed_xiao_esp32c3`
 - framework: `arduino`
+- upload port: `COM3`
+- monitor port: `COM3`
 - monitor speed: `115200`
 
 Libraries pulled by PlatformIO:
@@ -95,7 +111,10 @@ The firmware:
 - publishes retained state and telemetry topics
 - subscribes to the relay command topic
 - republishes Home Assistant discovery on reconnect
-- marks device availability `online` or `offline`
+- marks device availability `online` or `offline` using an MQTT last-will
+- publishes router runtime state such as `booting`, `router_running`, `router_off`, and `router_restarting`
+- publishes local sensor debug/health state so Home Assistant can show when sensors are `ready`, `waiting_for_valid_read`, or `not_ready`
+- republishes telemetry after reconnect so retained topics recover cleanly
 
 Relay command payloads accepted on `TOPIC_RELAY_SET`:
 
@@ -107,10 +126,21 @@ Relay command payloads accepted on `TOPIC_RELAY_SET`:
 Key runtime topics are configured in `router_box_config.h`, including:
 
 - temperature topics for `box1` and `box2`
-- router `volts`, `amps`, and `watts`
+- router `volts`, `amps`, `watts`, and `wh`
 - relay `set` and `state`
 - device `status`
+- MQTT availability topic
 - optional Victron telemetry topics
+
+Additional built-in debug/status topics published by the firmware:
+
+- `littlelodge/routerbox/availability`
+- `littlelodge/routerbox/router_relay/pin_level`
+- `littlelodge/routerbox/temp/debug/count`
+- `littlelodge/routerbox/temp/debug/raw_count`
+- `littlelodge/routerbox/temp/debug/valid_count`
+- `littlelodge/routerbox/temp/debug/state`
+- `littlelodge/routerbox/router/debug/ina219_state`
 
 ## Home Assistant
 
@@ -119,8 +149,10 @@ On MQTT connect, the device publishes discovery config for:
 - router power switch
 - router restart button
 - box temperature sensors
-- router voltage/current/power sensors
-- optional Victron battery, solar, charge-state, RSSI, and link sensors
+- temperature debug count/state sensors
+- router voltage/current/power/energy sensors
+- optional Victron battery voltage, charge current, solar power, yield today, load current, charge state, charge state code, charger error, RSSI, and link sensors
+- optional Victron battery percent sensor when `BATTERY_SOC_ENABLED` is enabled
 
 This makes it straightforward to drop the device into a Home Assistant MQTT setup without manual entity creation.
 
@@ -134,10 +166,24 @@ When enabled, the firmware scans for BLE advertisements from the configured Vict
 - yield today
 - load current
 - charge state
+- charge state code
 - charger error code
 - RSSI
+- link state
+
+If `BATTERY_SOC_ENABLED` is turned on, the firmware also estimates battery percentage from battery voltage using a smoothed LiFePO4-style voltage curve with optional current-based compensation.
 
 If the Victron link goes stale, the firmware clears retained telemetry and marks the link state accordingly.
+
+## Local Sensor Resilience
+
+The firmware now treats local sensors as recoverable rather than one-shot startup dependencies:
+
+- `INA219` initialization is retried if startup fails or repeated reads become invalid
+- `DS18B20` discovery is retried if the bus is missing, no valid temperatures are seen for an extended period, or reads repeatedly fail
+- invalid sensor readings clear retained MQTT values instead of leaving stale numbers behind
+- temperature sensor count, raw count, valid count, and state are published for field debugging
+- relay GPIO pin level is published so you can verify active-high/active-low behavior remotely
 
 ## Notes
 

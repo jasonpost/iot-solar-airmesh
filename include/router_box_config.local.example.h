@@ -23,7 +23,9 @@ constexpr char TOPIC_TEMP_BOX2[] = "littlelodge/routerbox/temp/box2";
 constexpr char TOPIC_ROUTER_VOLTS[] = "littlelodge/routerbox/router/volts";
 constexpr char TOPIC_ROUTER_AMPS[] = "littlelodge/routerbox/router/amps";
 constexpr char TOPIC_ROUTER_WATTS[] = "littlelodge/routerbox/router/watts";
+constexpr char TOPIC_ROUTER_WH[] = "littlelodge/routerbox/router/wh";
 constexpr char TOPIC_VICTRON_BATTERY_VOLTS[] = "littlelodge/routerbox/victron/battery_volts";
+constexpr char TOPIC_VICTRON_BATTERY_PERCENT[] = "littlelodge/routerbox/victron/battery_percent";
 constexpr char TOPIC_VICTRON_CHARGE_AMPS[] = "littlelodge/routerbox/victron/charge_amps";
 constexpr char TOPIC_VICTRON_SOLAR_WATTS[] = "littlelodge/routerbox/victron/solar_watts";
 constexpr char TOPIC_VICTRON_YIELD_TODAY_WH[] = "littlelodge/routerbox/victron/yield_today_wh";
@@ -54,4 +56,13 @@ constexpr uint32_t RESTART_OFF_MS = 15000;
 constexpr uint32_t VICTRON_SCAN_INTERVAL_MS = 5000;
 constexpr uint8_t VICTRON_SCAN_DURATION_SECONDS = 1;
 constexpr uint32_t VICTRON_STALE_TIMEOUT_MS = 30000;
+
+constexpr bool BATTERY_SOC_ENABLED = false;
+constexpr float BATTERY_CAPACITY_AH = 20.0f;
+constexpr uint8_t BATTERY_SERIES_CELLS = 4;
+constexpr float BATTERY_SOC_SMOOTHING_ALPHA = 0.20f;
+constexpr float BATTERY_SOC_VOLTAGE_DEADBAND = 0.01f;
+constexpr bool BATTERY_SOC_USE_CURRENT_ASSIST = true;
+constexpr float BATTERY_SOC_CURRENT_ASSIST_VOLTS_PER_AMP = 0.015f;
+constexpr float BATTERY_SOC_CURRENT_DEADBAND_AMPS = 0.2f;
 }
